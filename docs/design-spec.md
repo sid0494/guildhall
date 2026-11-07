@@ -433,20 +433,22 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 
 ## Decisions and open questions
 
-Each decision gets a short record in `docs/adr/` (context, options, choice, consequences) when it is made. Small design calls count too; they're the ones most easily forgotten.
+Each decision gets a short record in `docs/adr/` (context, options, choice, consequences) when it is made. Small design calls count too; they're the ones most easily forgotten. Records are numbered in the order they are written; see [ADR 0001](adr/0001-record-architecture-decisions.md).
 
 ### Decisions to record
 
-| # | Decision | Current leaning |
+Pending decisions have no number until their record is written; the ADR column then links to it.
+
+| Decision | Current leaning | ADR |
 | --- | --- | --- |
-| 001 | Plug-in contract shape and what the platform owns | As in this spec |
-| 002 | HTTP interactions endpoint vs. gateway bot | HTTP endpoint |
-| 003 | Job dedupe in Postgres vs. SQS FIFO deduplication | Postgres `processed_jobs` (works with standard queues and outlives FIFO's dedupe window) |
-| 004 | Side Quest alert dedupe key | Game, shop, price, deal expiry |
-| 005 | Outbound limiter fails closed when Redis is down | Fail closed |
-| 006 | Redis in-cluster vs. ElastiCache | In-cluster |
-| 007 | Accept rare duplicate Discord posts on dispatcher crash | Accept |
-| 008 | Metrics stored long format vs. one column per metric | Long format |
+| Plug-in contract shape and what the platform owns | As in this spec | Pending |
+| HTTP interactions endpoint vs. gateway bot | HTTP endpoint | Pending |
+| Job dedupe in Postgres vs. SQS FIFO deduplication | Postgres `processed_jobs` (works with standard queues and outlives FIFO's dedupe window) | Pending |
+| Side Quest alert dedupe key | Game, shop, price, deal expiry | Pending |
+| Outbound limiter fails closed when Redis is down | Fail closed | Pending |
+| Redis in-cluster vs. ElastiCache | In-cluster | Pending |
+| Accept rare duplicate Discord posts on dispatcher crash | Accept | Pending |
+| Metrics stored long format vs. one column per metric | Long format | Pending |
 
 ### Open questions
 
