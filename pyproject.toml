@@ -8,3 +8,40 @@ dependencies = []
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14"]
 build-backend = "uv_build"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle: errors and warnings
+    "F",       # pyflakes: unused imports, undefined names
+    "I",       # isort: import order
+    "B",       # flake8-bugbear: likely bugs and design problems
+    "UP",      # pyupgrade: syntax for the targeted Python version
+    "SIM",     # flake8-simplify: needlessly complex code
+    "N",       # pep8-naming: naming conventions
+    "S",       # flake8-bandit: security smells
+    "ASYNC",   # flake8-async: blocking calls inside async code
+    "DTZ",     # flake8-datetimez: naive datetimes (all timestamps are UTC)
+    "PT",      # flake8-pytest-style: consistent pytest usage
+    "RUF",     # ruff-specific checks
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # pytest's assert statements are how tests check results
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+enable_error_code = ["ignore-without-code"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib", "-ra"]
+xfail_strict = true
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+]
