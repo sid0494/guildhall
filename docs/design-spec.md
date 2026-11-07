@@ -78,10 +78,11 @@ The highlighted plug-ins are the only game-specific code; everything else is pla
 
 ```
 guildhall/
-  platform/             worker loop, dedupe, rate limiter, outbox, plug-in registry
-  plugins/gank_report/  discover, fetch_match, metrics, commands, render
-  plugins/side_quest/   library and wishlist sync, prices, alerts, commands
-  api/                  FastAPI app and the Discord interactions endpoint
+  src/guildhall/
+    platform/             worker loop, dedupe, rate limiter, outbox, plug-in registry
+    plugins/gank_report/  discover, fetch_match, metrics, commands, render
+    plugins/side_quest/   library and wishlist sync, prices, alerts, commands
+    api/                  FastAPI app and the Discord interactions endpoint
   migrations/           Alembic
   tests/                unit, contract and fixture tests; mock upstream server
   k8s/base/             Deployments, Services, Ingress, probes
@@ -92,7 +93,9 @@ guildhall/
   Makefile              up, down, test, drill
 ```
 
-**Stack:** Python with FastAPI, PostgreSQL, Redis, AWS SQS and S3, Docker, Kubernetes, Terraform, GitHub Actions.
+All Python code is one `guildhall` package in a src layout, so `guildhall.platform` never shadows the standard library's `platform` module ([ADR 0003](adr/0003-single-package-src-layout.md)).
+
+**Stack:** Python 3.14 managed with uv ([ADR 0002](adr/0002-python-3-14-and-uv.md)), FastAPI, PostgreSQL, Redis, AWS SQS and S3, Docker, Kubernetes, Terraform, GitHub Actions.
 
 ## Plug-in contract
 

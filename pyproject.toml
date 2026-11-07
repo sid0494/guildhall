@@ -1,0 +1,10 @@
+[project]
+name = "guildhall"
+version = "0.1.0"
+description = "Discord bot that hosts game-data plug-ins on a shared platform"
+requires-python = ">=3.14,<3.15"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14"]
+build-backend = "uv_build"
