@@ -103,9 +103,9 @@ The platform owns everything cross-cutting: scheduling, queueing, retries, rate 
 
 ```python
 class SourcePlugin(Protocol):
-    name: str                         # "gank_report", "side_quest"
-    contract_version: int             # bumped only on breaking changes
-    rate_limit: RateLimitPolicy       # per-minute and per-day budget for the upstream API
+    name: str  # "gank_report", "side_quest"
+    contract_version: int  # bumped only on breaking changes
+    rate_limit: RateLimitPolicy  # per-minute and per-day budget for the upstream API
 
     def schedules(self) -> list[Schedule]:
         """Recurring triggers, e.g. ('poll_matches', every 15 min)."""
