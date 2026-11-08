@@ -18,6 +18,24 @@ All configuration comes from environment variables prefixed `GUILDHALL_`.
 fill in real values. `.env` is git-ignored and must never be committed. Real
 environment variables override `.env`.
 
+## Local services
+
+[`compose.yaml`](../compose.yaml) runs the infrastructure the bot needs:
+Postgres, Redis, and moto (an open-source emulator for SQS and S3). They need
+[Docker](https://docs.docker.com/engine/install/ubuntu/) with the Compose
+plug-in, and `GUILDHALL_POSTGRES_PASSWORD` set in `.env`.
+
+```sh
+docker compose up -d --wait     # start everything in the background; wait until healthy
+docker compose ps               # list the services and their health
+docker compose logs -f postgres # follow one service's logs
+docker compose down             # stop and remove the containers; data is kept
+docker compose down -v          # also delete the Postgres data volume
+```
+
+All ports are bound to `127.0.0.1`: Postgres on 5432, Redis on 6379, moto on
+5000.
+
 ## Checks
 
 ```sh

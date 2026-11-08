@@ -41,7 +41,6 @@ kubeconfig*
 # --- Local data ---
 *.dump
 *.sql.gz
-.localstack/
 
 # --- Editors and OS ---
 .vscode/
