@@ -36,12 +36,33 @@ docker compose down -v          # also delete the Postgres data volume
 All ports are bound to `127.0.0.1`: Postgres on 5432, Redis on 6379, moto on
 5000.
 
+## Database migrations
+
+The schema is managed with Alembic; migrations live in
+[`migrations/versions/`](../migrations/versions/). Start the compose services
+first.
+
+```sh
+uv run alembic upgrade head                            # apply every pending migration
+uv run alembic current                                 # show the database's revision
+uv run alembic revision --autogenerate -m "add thing"  # draft a migration from table changes; review it
+uv run alembic downgrade -1                            # undo the latest migration
+```
+
+Never edit or delete a migration that has been applied anywhere; write a new
+one instead.
+
 ## Checks
 
 ```sh
-uv run pre-commit run --all-files   # everything CI runs: format, lint, types, tests
-uv run pytest                       # tests only
+uv run pre-commit run --all-files   # format, lint, types, unit and contract tests
+uv run pytest -m "not integration"  # unit and contract tests only
+docker compose up -d --wait         # integration tests need the compose services...
+uv run pytest -m integration        # ...then run them (CI runs them in their own job)
 ```
+
+Pre-commit skips integration tests so committing doesn't need Docker running;
+CI always runs them.
 
 ## Workflow
 
