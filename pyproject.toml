@@ -5,6 +5,7 @@ description = "Discord bot that hosts game-data plug-ins on a shared platform"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.2",
 ]
 
 [build-system]

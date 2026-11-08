@@ -31,6 +31,7 @@ from guildhall.platform.checks import (
     check_outcome,
     job_types_by_name,
 )
+from guildhall.plugins import CATALOGUE
 from guildhall.plugins.synthetic import SyntheticPlugin, SyntheticWork
 
 
@@ -101,6 +102,10 @@ def _all_subclasses(cls: type[object]) -> set[type[object]]:
 def test_every_plugin_has_a_contract_case() -> None:
     covered = {type(case.plugin) for case in CASES}
     assert discovered_plugin_classes() <= covered
+
+
+def test_every_plugin_is_in_the_catalogue() -> None:
+    assert discovered_plugin_classes() <= set(CATALOGUE.values())
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.plugin.name)

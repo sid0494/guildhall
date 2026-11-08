@@ -79,6 +79,7 @@ The highlighted plug-ins are the only game-specific code; everything else is pla
 ```
 guildhall/
   src/guildhall/
+    bootstrap.py          composition root: wires the plug-in catalogue into the platform
     contract/             the plug-in contract: interface, job and event types, errors
     platform/             worker loop, dedupe, rate limiter, outbox, plug-in registry
     plugins/gank_report/  discover, fetch_match, metrics, commands, render
@@ -139,7 +140,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - Each plug-in has its own rate-limit bucket, so Side Quest checking prices can't eat Gank Report's OpenDota budget.
 - Each plug-in owns its tables and never reads another plug-in's.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
-- Plug-ins are registered in one list in config. Disabling one is a config change, not a code change.
+- Available plug-ins are listed in one catalogue (`guildhall.plugins.CATALOGUE`); the enabled ones are named in `GUILDHALL_PLUGINS`. Disabling one is a config change, not a code change, and the platform refuses to start if a name is unknown ([ADR 0011](adr/0011-settings-and-plugin-catalogue.md)).
 - The platform checks every plug-in's declarations at startup and every outcome at runtime (`guildhall.platform.checks`), with the same functions the contract suite uses ([ADR 0010](adr/0010-contract-enforcement.md)).
 
 **Contract health check:** when a new plug-in needs a platform change, record why. Repeated changes in the same area mean the contract is missing a concept.
@@ -330,7 +331,7 @@ Redis stays in-cluster rather than ElastiCache: it only holds rate-limit buckets
 
 ### Secrets
 
-Discord public key and bot token, Steam API key, IsThereAnyDeal key. Locally from a `.env` file that is never committed; in the cluster as a Kubernetes Secret created by `make up`. Moving them to AWS Secrets Manager is a later improvement.
+Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configuration and secrets are environment variables prefixed `GUILDHALL_`, loaded with pydantic-settings and documented in `.env.example` ([ADR 0011](adr/0011-settings-and-plugin-catalogue.md)). Locally they come from a `.env` file that is never committed; in the cluster as a Kubernetes Secret created by `make up`. Moving them to AWS Secrets Manager is a later improvement.
 
 ### CI/CD (GitHub Actions)
 

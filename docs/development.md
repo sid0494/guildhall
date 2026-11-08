@@ -8,7 +8,15 @@ version (3.14) itself.
 ```sh
 uv sync                        # create .venv and install dependencies from uv.lock
 uv run pre-commit install      # run the checks below before every commit
+cp .env.example .env           # local configuration; .env is git-ignored
 ```
+
+## Configuration
+
+All configuration comes from environment variables prefixed `GUILDHALL_`.
+[`.env.example`](../.env.example) lists every variable; copy it to `.env` and
+fill in real values. `.env` is git-ignored and must never be committed. Real
+environment variables override `.env`.
 
 ## Checks
 
