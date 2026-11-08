@@ -1,4 +1,4 @@
-# Scheduled version updates (docs/adr/0007). Security updates are enabled in
+# Scheduled version updates (docs/adr/0007, docs/adr/0012). Security updates are enabled in
 # the repository settings and are not delayed by the cooldown.
 version: 2
 updates:
@@ -20,4 +20,14 @@ updates:
       default-days: 7
     groups:
       github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    groups:
+      compose-images:
         patterns: ["*"]

@@ -87,6 +87,7 @@ guildhall/
     plugins/synthetic/    payload-driven plug-in for end-to-end tests, drills and load checks
     api/                  FastAPI app and the Discord interactions endpoint
   migrations/           Alembic
+  compose.yaml          local infrastructure: Postgres, Redis, moto
   tests/                unit, contract and fixture tests; mock upstream server
   k8s/base/             Deployments, Services, Ingress, probes
   k8s/overlays/         local (kind) and aws (EKS)
@@ -314,9 +315,11 @@ One container image, three run targets. Everyday use runs locally; AWS runs the 
 
 | Environment | Compute | Queue and storage | Discord reaches it via |
 | --- | --- | --- | --- |
-| Dev | docker-compose | LocalStack (SQS, S3), Postgres and Redis containers | Tunnel |
+| Dev | docker-compose | moto (SQS, S3), Postgres and Redis containers | Tunnel |
 | Local cluster | kind with Kustomize `overlays/local` | Same, in-cluster | Tunnel |
 | AWS | EKS with `overlays/aws` | SQS, S3, RDS Postgres; Redis in-cluster | ALB with HTTPS (own domain, ACM certificate) |
+
+Locally, Docker Engine runs the services from `compose.yaml`: Postgres 18, Redis 8, and moto as an open-source emulator for SQS and S3. LocalStack was the first choice but now requires an account token, which CI and Dependabot pull requests cannot use ([ADR 0012](adr/0012-local-infrastructure.md)).
 
 ### AWS resources (Terraform)
 
@@ -395,7 +398,7 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 
 - [ ] Plug-in contract, registry and contract test suite
 - [ ] Worker loop with dedupe, typed errors and dead-letter handling
-- [ ] docker-compose with api, worker, Postgres, Redis, LocalStack
+- [ ] docker-compose with api, worker, Postgres, Redis, moto
 
 **Done when:** a fake plug-in's jobs flow end to end and a duplicate delivery is a no-op.
 
