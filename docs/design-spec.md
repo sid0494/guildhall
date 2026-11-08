@@ -83,6 +83,7 @@ guildhall/
     platform/             worker loop, dedupe, rate limiter, outbox, plug-in registry
     plugins/gank_report/  discover, fetch_match, metrics, commands, render
     plugins/side_quest/   library and wishlist sync, prices, alerts, commands
+    plugins/synthetic/    payload-driven plug-in for end-to-end tests, drills and load checks
     api/                  FastAPI app and the Discord interactions endpoint
   migrations/           Alembic
   tests/                unit, contract and fixture tests; mock upstream server
@@ -139,6 +140,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - Each plug-in owns its tables and never reads another plug-in's.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
 - Plug-ins are registered in one list in config. Disabling one is a config change, not a code change.
+- The platform checks every plug-in's declarations at startup and every outcome at runtime (`guildhall.platform.checks`), with the same functions the contract suite uses ([ADR 0010](adr/0010-contract-enforcement.md)).
 
 **Contract health check:** when a new plug-in needs a platform change, record why. Repeated changes in the same area mean the contract is missing a concept.
 
@@ -349,9 +351,10 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Locally fro
 ### Test layers
 
 - **Unit:** metric functions, alert rules, state transitions, signature verification.
-- **Contract tests:** a shared suite every plug-in must pass (typed errors, dedupe keys present and namespaced, `render` does no I/O), run against a fake platform.
+- **Contract tests:** a shared suite every plug-in must pass, run against a fake platform: declarations are valid, every job type has examples, payloads survive a JSON round trip, outcomes are namespaced, errors are typed, and (from M2) `render` does no I/O. A guard test fails if a plug-in has no examples.
 - **Recorded fixtures:** real upstream responses (a parsed match, an unparsed match, a wishlist, a price batch) saved once and replayed, so tests never call live APIs.
 - **Mock upstream server:** a small service in the cluster that can return `429`s, slow responses, never-parsed matches and malformed payloads on demand. All drills point at it.
+- **Synthetic plug-in:** a plug-in whose job payload says what to do (sleep, wait, fail, crash, fan out, emit events). Disabled by default; enabled for end-to-end tests, drills and the load check.
 
 ### Failure drills
 
@@ -374,7 +377,7 @@ Run on the kind cluster. For each, record what was expected, what happened, and 
 
 ### Load check
 
-Enqueue 1,000 synthetic jobs on kind and record throughput per worker replica, while confirming no plug-in exceeds its upstream budget.
+Enqueue 1,000 synthetic plug-in jobs on kind and record throughput per worker replica, while confirming no plug-in exceeds its upstream budget.
 
 ## Milestones
 
