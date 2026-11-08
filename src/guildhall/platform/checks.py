@@ -7,11 +7,15 @@ function returns every problem found, so one run reports them all.
 """
 
 import re
+from datetime import timedelta
 from typing import Any
 
 from guildhall.contract import ContractModel, JobType, Outcome, SourcePlugin
 
 SUPPORTED_CONTRACT_VERSIONS = frozenset({1})
+
+MAX_QUEUE_DELAY = timedelta(minutes=15)
+"""SQS rejects message delays longer than 15 minutes."""
 
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
 
@@ -53,7 +57,7 @@ def check_declarations(plugin: SourcePlugin) -> list[str]:
 
 
 def check_outcome(plugin: SourcePlugin, outcome: Outcome) -> list[str]:
-    """Problems with a handler's outcome: namespacing and follow-up jobs."""
+    """Problems with a handler's outcome: namespacing, follow-ups and delays."""
     problems: list[str] = []
     key_prefix = f"{plugin.name}:"
     type_prefix = f"{plugin.name}."
@@ -69,7 +73,15 @@ def check_outcome(plugin: SourcePlugin, outcome: Outcome) -> list[str]:
                 f"event type {event.type!r} must start with {type_prefix!r}"
             )
 
+    if outcome.retry_in is not None and outcome.retry_in > MAX_QUEUE_DELAY:
+        problems.append(f"retry delay {outcome.retry_in} exceeds {MAX_QUEUE_DELAY}")
+
     for spec in outcome.jobs:
+        if spec.delay > MAX_QUEUE_DELAY:
+            problems.append(
+                f"follow-up job {spec.dedupe_key!r} delay {spec.delay} exceeds"
+                f" {MAX_QUEUE_DELAY}"
+            )
         if not spec.dedupe_key.startswith(key_prefix):
             problems.append(
                 f"job dedupe key {spec.dedupe_key!r} must start with {key_prefix!r}"

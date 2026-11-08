@@ -1,5 +1,6 @@
 """Unit tests for the platform's contract checks: one test per rule."""
 
+from datetime import timedelta
 from typing import Any, Literal
 
 import pytest
@@ -148,3 +149,23 @@ def test_follow_up_payload_must_match_its_job_type() -> None:
     spec = JobSpec(type="ping", payload=Pong(n=1), dedupe_key="sample:ping:1")
     outcome = Outcome(jobs=(spec,))
     assert any("expected Ping" in p for p in check_outcome(Sample(), outcome))
+
+
+def test_follow_up_delay_must_fit_the_queue_limit() -> None:
+    spec = JobSpec(
+        type="ping",
+        payload=Ping(n=1),
+        dedupe_key="sample:ping:1",
+        delay=timedelta(minutes=16),
+    )
+    outcome = Outcome(jobs=(spec,))
+    assert any("exceeds 0:15:00" in p for p in check_outcome(Sample(), outcome))
+
+
+def test_retry_delay_must_fit_the_queue_limit() -> None:
+    outcome = Outcome(retry_in=timedelta(minutes=16))
+    assert any("retry delay" in p for p in check_outcome(Sample(), outcome))
+
+
+def test_delays_at_the_limit_are_allowed() -> None:
+    assert check_outcome(Sample(), Outcome(retry_in=timedelta(minutes=15))) == []
