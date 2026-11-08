@@ -1,0 +1,116 @@
+"""Values exchanged between plug-ins and the platform.
+
+All values are immutable pydantic models that ignore unknown fields, so a newer
+producer can add fields without breaking an older consumer.
+"""
+
+from datetime import timedelta
+from typing import Annotated, Self
+
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveInt,
+    SerializeAsAny,
+    model_validator,
+)
+
+NonEmptyStr = Annotated[str, Field(min_length=1)]
+
+
+def _non_negative(value: timedelta) -> timedelta:
+    if value < timedelta(0):
+        raise ValueError("must not be negative")
+    return value
+
+
+def _positive(value: timedelta) -> timedelta:
+    if value <= timedelta(0):
+        raise ValueError("must be positive")
+    return value
+
+
+class ContractModel(BaseModel):
+    """Base for every contract value: immutable, unknown fields ignored."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+
+class RateLimitPolicy(ContractModel):
+    """A plug-in's budget for calls to its upstream API."""
+
+    per_minute: PositiveInt
+    per_day: PositiveInt
+
+
+class Schedule(ContractModel):
+    """A recurring trigger for one of the plug-in's job types.
+
+    `cron` is a five-field cron expression evaluated in UTC, for example
+    "*/15 * * * *" or "0 18 * * SUN". With `per_account`, the platform creates
+    one job per linked account; otherwise one job for the plug-in.
+    """
+
+    job_type: NonEmptyStr
+    cron: NonEmptyStr
+    per_account: bool = True
+
+
+class JobSpec(ContractModel):
+    """Work a handler asks the platform to enqueue.
+
+    `dedupe_key` is namespaced by plug-in name, e.g. "gank_report:match:42";
+    the platform runs each key to completion at most once.
+    """
+
+    type: NonEmptyStr
+    payload: SerializeAsAny[BaseModel]
+    dedupe_key: NonEmptyStr
+    delay: Annotated[timedelta, AfterValidator(_non_negative)] = timedelta(0)
+
+
+class Job[P: BaseModel](ContractModel):
+    """Work as delivered to a handler, with its payload already validated.
+
+    `attempt` starts at 1 and increases each time the job runs again, whether
+    after a failure or a retry outcome.
+    """
+
+    type: NonEmptyStr
+    payload: P
+    dedupe_key: NonEmptyStr
+    attempt: PositiveInt
+
+
+class Event(ContractModel):
+    """Something that happened, for the platform to deliver.
+
+    Plug-ins subclass it with their own fields. `type` is namespaced by plug-in
+    name, e.g. "gank_report.match_analyzed". Within one `schema_version`,
+    changes are additive only.
+    """
+
+    type: NonEmptyStr
+    schema_version: PositiveInt
+    dedupe_key: NonEmptyStr
+
+
+class Outcome(ContractModel):
+    """The result of running a job.
+
+    A finished job may emit events and follow-up jobs. A job that is not ready
+    yet (an expected wait, not a failure) sets `retry_in` instead and emits
+    nothing, so the platform runs it again later with `attempt + 1`.
+    """
+
+    events: tuple[SerializeAsAny[Event], ...] = ()
+    jobs: tuple[JobSpec, ...] = ()
+    retry_in: Annotated[timedelta, AfterValidator(_positive)] | None = None
+
+    @model_validator(mode="after")
+    def _retry_emits_nothing(self) -> Self:
+        if self.retry_in is not None and (self.events or self.jobs):
+            raise ValueError("an outcome that retries cannot emit events or jobs")
+        return self
