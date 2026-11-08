@@ -25,11 +25,9 @@ from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from guildhall.contract import Event, JobSpec
+from guildhall.platform.checks import MAX_QUEUE_DELAY
 from guildhall.platform.database import metadata
 from guildhall.platform.envelope import JobEnvelope
-
-MAX_DELAY_SECONDS = 900
-"""SQS rejects message delays longer than 15 minutes."""
 
 outbox_jobs = Table(
     "outbox_jobs",
@@ -43,7 +41,8 @@ outbox_jobs = Table(
     ),
     Column("sent_at", DateTime(timezone=True)),
     CheckConstraint(
-        f"delay_seconds BETWEEN 0 AND {MAX_DELAY_SECONDS}", name="delay_seconds_range"
+        f"delay_seconds BETWEEN 0 AND {int(MAX_QUEUE_DELAY.total_seconds())}",
+        name="delay_seconds_range",
     ),
     Index("ix_outbox_jobs_pending", "id", postgresql_where="sent_at IS NULL"),
 )

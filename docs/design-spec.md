@@ -137,7 +137,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 
 - Plug-ins never call Discord, SQS or each other, and import only `guildhall.contract`. They return jobs and events; the platform delivers them. A broken plug-in can't take down the bot.
 - Every job and event has a `dedupe_key`, namespaced by plug-in name. The platform guarantees each key takes effect once.
-- Errors are typed. `RetryableError` goes back on the queue with backoff; `PermanentError` goes to the dead-letter queue with its reason. A payload that fails validation is dead-lettered before plug-in code runs.
+- Errors are typed. `RetryableError` goes back on the queue with exponential backoff and jitter; `PermanentError` goes to the dead-letter queue with its reason. A payload that fails validation is dead-lettered before plug-in code runs. Handlers run under a timeout ([ADR 0018](adr/0018-job-runner.md)).
 - Each plug-in has its own rate-limit bucket, so Side Quest checking prices can't eat Gank Report's OpenDota budget.
 - Each plug-in owns its tables and never reads another plug-in's.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
