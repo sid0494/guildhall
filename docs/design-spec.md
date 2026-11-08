@@ -79,6 +79,7 @@ The highlighted plug-ins are the only game-specific code; everything else is pla
 ```
 guildhall/
   src/guildhall/
+    contract/             the plug-in contract: interface, job and event types, errors
     platform/             worker loop, dedupe, rate limiter, outbox, plug-in registry
     plugins/gank_report/  discover, fetch_match, metrics, commands, render
     plugins/side_quest/   library and wishlist sync, prices, alerts, commands
@@ -99,37 +100,41 @@ All Python code is one `guildhall` package in a src layout, so `guildhall.platfo
 
 ## Plug-in contract
 
-The platform owns everything cross-cutting: scheduling, queueing, retries, rate limiting, deduplication, storage and Discord delivery. A plug-in only knows how to find work, do it, and describe the result.
+The platform owns everything cross-cutting: scheduling, queueing, retries, rate limiting, deduplication, storage and Discord delivery. A plug-in declares the kinds of jobs it handles; each handler does one piece of work and describes the result.
+
+The contract lives in its own package, `guildhall.contract`. Plug-ins import from it and never from `guildhall.platform`, so dependencies point one way: plug-ins → contract ← platform ([ADR 0008](adr/0008-plugin-contract-shape.md)). Contract values are frozen pydantic models that ignore unknown fields ([ADR 0009](adr/0009-pydantic-contract-values.md)). In outline (the package is the source of truth):
 
 ```python
-class SourcePlugin(Protocol):
+class SourcePlugin(ABC):
+    contract_version: ClassVar[int] = 1  # bumped only on breaking changes
     name: str  # "gank_report", "side_quest"
-    contract_version: int  # bumped only on breaking changes
     rate_limit: RateLimitPolicy  # per-minute and per-day budget for the upstream API
 
+    @abstractmethod
+    def job_types(self) -> list[JobType[Any]]:
+        """Every kind of job, e.g. JobType("fetch_match", FetchMatch, self.fetch_match)."""
+
     def schedules(self) -> list[Schedule]:
-        """Recurring triggers, e.g. ('poll_matches', every 15 min)."""
+        """Recurring triggers, e.g. Schedule(job_type="poll_matches", cron="*/15 * * * *")."""
+        return []
 
-    async def discover(self, account: LinkedAccount, ctx: Context) -> list[JobSpec]:
-        """Find new work: new match IDs, games whose price needs checking.
-        Each JobSpec carries a dedupe_key, e.g. 'gank_report:match:8123456789'."""
 
-    async def process(self, job: Job, ctx: Context) -> list[Event]:
-        """Fetch, normalize, store. Raise RetryableError or PermanentError.
-        ctx.http is already rate-limited for this plug-in."""
-
-    def commands(self) -> list[SlashCommand]:
-        """Discord commands this plug-in contributes."""
-
-    def render(self, event: Event) -> DiscordMessage:
-        """Turn an event into a message. No I/O."""
+# Every handler has the same shape:
+async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
+    """job.payload is already validated against FetchMatch.
+    Return Outcome(events=..., jobs=...) when done, or Outcome(retry_in=...) when
+    the work isn't ready yet. Raise RetryableError or PermanentError on failure."""
 ```
+
+- `JobSpec` is work a handler asks for: type, payload, `dedupe_key` (e.g. `gank_report:match:8123456789`) and an optional delay. Any handler can return follow-up jobs, so polling is just a scheduled job type whose outcome is new jobs.
+- `Outcome(retry_in=...)` is an expected wait, such as a match that isn't parsed yet. The job runs again with `attempt + 1` and it doesn't count as a failure; it emits nothing until it finishes.
+- `Context` will carry the rate-limited HTTP client (`ctx.http`) and storage from M2. Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
 
 ### Rules
 
-- Plug-ins never call Discord, SQS or each other. They return jobs and events; the platform delivers them. A broken plug-in can't take down the bot.
+- Plug-ins never call Discord, SQS or each other, and import only `guildhall.contract`. They return jobs and events; the platform delivers them. A broken plug-in can't take down the bot.
 - Every job and event has a `dedupe_key`, namespaced by plug-in name. The platform guarantees each key takes effect once.
-- Errors are typed. `RetryableError` goes back on the queue with backoff; `PermanentError` goes to the dead-letter queue with its reason.
+- Errors are typed. `RetryableError` goes back on the queue with backoff; `PermanentError` goes to the dead-letter queue with its reason. A payload that fails validation is dead-lettered before plug-in code runs.
 - Each plug-in has its own rate-limit bucket, so Side Quest checking prices can't eat Gank Report's OpenDota budget.
 - Each plug-in owns its tables and never reads another plug-in's.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
@@ -159,10 +164,10 @@ Metrics live in a registry of small functions (`match_json → value or missing`
 
 ### Match pipeline
 
-1. Every 15 minutes, a `discover` job fetches my recent matches and enqueues one `fetch_match` job per new match ID, keyed `gank_report:match:<id>`.
+1. Every 15 minutes, a scheduled `poll_matches` job fetches my recent matches and returns one `fetch_match` job per new match ID, keyed `gank_report:match:<id>`.
 2. `fetch_match` gets the full match and archives the raw JSON to S3.
-3. If the match isn't parsed yet, it requests a parse and re-enqueues itself with a delay. Parsing usually takes 1–5 minutes, and some matches never parse.
-4. After 3 delayed attempts, it computes what it can from the basic record and marks parsed-only metrics as missing.
+3. If the match isn't parsed yet, it requests a parse and returns a retry outcome with a delay. Parsing usually takes 1–5 minutes, and some matches never parse.
+4. After 3 attempts, it computes what it can from the basic record and marks parsed-only metrics as missing.
 5. Metrics are written to Postgres and a `gank_report.match_analyzed` event goes to the outbox.
 
 ### Reports
@@ -445,7 +450,7 @@ Pending decisions have no number until their record is written; the ADR column t
 
 | Decision | Current leaning | ADR |
 | --- | --- | --- |
-| Plug-in contract shape and what the platform owns | As in this spec | Pending |
+| Plug-in contract shape and what the platform owns | ABC with declared job types, own package | [0008](adr/0008-plugin-contract-shape.md) |
 | HTTP interactions endpoint vs. gateway bot | HTTP endpoint | Pending |
 | Job dedupe in Postgres vs. SQS FIFO deduplication | Postgres `processed_jobs` (works with standard queues and outlives FIFO's dedupe window) | Pending |
 | Side Quest alert dedupe key | Game, shop, price, deal expiry | Pending |
