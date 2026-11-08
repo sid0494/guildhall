@@ -274,7 +274,8 @@ Platform tables are shared; each plug-in owns tables prefixed with its name. Raw
 | --- | --- | --- | --- |
 | `linked_accounts` | Platform | `discord_user_id`, `plugin`, `external_id` | Who I am in each source |
 | `processed_jobs` | Platform | `dedupe_key` (primary key), `completed_at` | A job key takes effect once |
-| `outbox_events` | Platform | `event_id`, `dedupe_key` (unique), `type`, `schema_version`, `payload`, `status`, `attempts`, `discord_message_id` | Events waiting for Discord delivery |
+| `outbox_events` | Platform | `id`, `plugin`, `dedupe_key` (unique), `type`, `schema_version`, `payload`; from M2 also `status`, `attempts`, `discord_message_id` | Events waiting for Discord delivery |
+| `outbox_jobs` | Platform | `id`, `dedupe_key`, `body` (job envelope), `delay_seconds`, `sent_at` | Follow-up jobs waiting for the relay to send them to SQS ([ADR 0017](adr/0017-queue-client-and-outbox-tables.md)) |
 | `interactions_seen` | Platform | `interaction_id` (primary key), `received_at` | Discord retry dedupe |
 | `gank_report_matches` | Gank Report | `match_id`, `hero_id`, `played_at`, `parsed`, `s3_key` | One row per match |
 | `gank_report_metrics` | Gank Report | `match_id`, `metric`, `value` | Long format, so new metrics need no migration |
@@ -293,7 +294,8 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 | --- | --- |
 | A job takes effect once, even if delivered twice | SQS is at-least-once; the worker records the job's `dedupe_key` in `processed_jobs` in the same transaction as the job's writes |
 | A crashed worker loses no work | SQS visibility timeout redelivers unacknowledged messages; jobs must be safe to re-run |
-| Bad jobs don't block good ones | After 5 receives, a message moves to the dead-letter queue; redrive after a fix |
+| A follow-up job is never lost | Follow-up jobs go to `outbox_jobs` in the same transaction as the job's writes; a relay sends them to SQS ([ADR 0016](adr/0016-worker-job-lifecycle.md)) |
+| Bad jobs don't block good ones | After 5 receives, a message moves to the dead-letter queue; permanent failures, invalid payloads, contract violations and disabled plug-ins go there at once with a reason; redrive after a fix |
 | Upstream limits are respected across all replicas | One Redis token bucket per plug-in; `429` responses trigger exponential backoff with jitter |
 | One event, one Discord message (almost) | Events go to `outbox_events` in the same transaction as the data change; the dispatcher posts and records `discord_message_id` |
 | Discord retries don't double-act | `interactions_seen` with a unique constraint on the interaction ID |

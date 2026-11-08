@@ -4,6 +4,7 @@ Every test under tests/integration is marked `integration`: pre-commit skips
 them and CI runs them in their own job, after `docker compose up`.
 """
 
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from guildhall.platform.database import DatabaseSettings, create_engine
+from guildhall.platform.dev_queues import ensure_queues
+from guildhall.platform.queue import JobQueue, QueueSettings, open_job_queue
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,3 +46,21 @@ async def connection(engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
         transaction = await connection.begin()
         yield connection
         await transaction.rollback()
+
+
+@pytest.fixture
+def queue_settings() -> QueueSettings:
+    """Queue settings with names unique to this test, so tests never share queues."""
+    suffix = uuid.uuid4().hex[:12]
+    return QueueSettings(
+        jobs_queue_name=f"test-jobs-{suffix}",
+        dead_letter_queue_name=f"test-jobs-dlq-{suffix}",
+        max_receive_count=2,
+    )
+
+
+@pytest.fixture
+async def job_queue(queue_settings: QueueSettings) -> AsyncIterator[JobQueue]:
+    await ensure_queues(queue_settings)
+    async with open_job_queue(queue_settings) as queue:
+        yield queue
