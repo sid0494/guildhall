@@ -377,10 +377,10 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 
 ### M0: Setup
 
-- [ ] Steam profile and game details set to public; Steam Web API key
-- [ ] IsThereAnyDeal API key
-- [ ] Discord application and a private test server
-- [ ] Repo with the layout above, pre-commit hooks, CI skeleton
+- [x] Steam profile and game details set to public; Steam Web API key
+- [x] IsThereAnyDeal API key
+- [x] Discord application and a private test server
+- [x] Repo with the layout above, pre-commit hooks, CI skeleton
 
 ### M1: Platform skeleton
 
