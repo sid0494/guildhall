@@ -328,6 +328,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Locally fro
 ### CI/CD (GitHub Actions)
 
 - Every PR: the pre-commit hooks (lint, format, type check, unit tests, contract tests against the mock upstream) and a gitleaks scan of the full history; actions are pinned to commit SHAs ([ADR 0006](adr/0006-ci-workflow.md)).
+- Dependabot: security fix PRs as advisories appear, and monthly grouped version updates for Python packages and actions after a 7-day cooldown ([ADR 0007](adr/0007-dependabot.md)).
 - Merge to `main`: build the image, push to ECR tagged with the git SHA. AWS access through GitHub OIDC; no AWS keys stored in GitHub.
 - Deploy: manually triggered workflow that sets the image tag and applies the AWS overlay.
 
