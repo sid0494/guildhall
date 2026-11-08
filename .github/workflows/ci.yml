@@ -45,6 +45,11 @@ jobs:
     name: Integration tests
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      # moto accepts any credentials; these reach only the emulator in this job.
+      GUILDHALL_AWS_ENDPOINT_URL: http://127.0.0.1:5000
+      GUILDHALL_AWS_ACCESS_KEY_ID: moto-ci
+      GUILDHALL_AWS_SECRET_ACCESS_KEY: moto-ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,7 +66,7 @@ jobs:
           echo "GUILDHALL_POSTGRES_PASSWORD=${password}" >> "$GITHUB_ENV"
 
       - name: Start the compose services
-        run: docker compose up -d --wait postgres
+        run: docker compose up -d --wait postgres moto
 
       - name: Install dependencies from the lockfile
         run: uv sync --locked

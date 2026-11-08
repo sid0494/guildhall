@@ -36,6 +36,13 @@ docker compose down -v          # also delete the Postgres data volume
 All ports are bound to `127.0.0.1`: Postgres on 5432, Redis on 6379, moto on
 5000.
 
+After starting the services, create the job queue and its dead-letter queue on
+moto (safe to run repeatedly):
+
+```sh
+uv run python -m guildhall.platform.dev_queues
+```
+
 ## Database migrations
 
 The schema is managed with Alembic; migrations live in

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Discord bot that hosts game-data plug-ins on a shared platform"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "aiobotocore>=3.10.0",
     "alembic>=1.20.1",
     "psycopg[binary]>=3.3.8",
     "pydantic>=2.14.3",
@@ -62,6 +63,7 @@ dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "ruff>=0.17.4",
+    "types-aiobotocore[sqs]>=3.10.0",
 ]
 
 [tool.alembic]

@@ -3,8 +3,11 @@
 from alembic import context
 from sqlalchemy import create_engine
 
-import guildhall.platform.dedupe  # noqa: F401  (registers its tables on the metadata)
+from guildhall.platform import dedupe, outbox
 from guildhall.platform.database import DatabaseSettings, metadata
+
+TABLE_MODULES = (dedupe, outbox)
+"""Modules whose tables migrations manage; importing them registers the tables."""
 
 
 def run_migrations_offline() -> None:
