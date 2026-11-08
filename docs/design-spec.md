@@ -99,7 +99,7 @@ guildhall/
 
 All Python code is one `guildhall` package in a src layout, so `guildhall.platform` never shadows the standard library's `platform` module ([ADR 0003](adr/0003-single-package-src-layout.md)).
 
-**Stack:** Python 3.14 managed with uv ([ADR 0002](adr/0002-python-3-14-and-uv.md)), FastAPI, PostgreSQL, Redis, AWS SQS and S3, Docker, Kubernetes, Terraform, GitHub Actions.
+**Stack:** Python 3.14 managed with uv ([ADR 0002](adr/0002-python-3-14-and-uv.md)), FastAPI, PostgreSQL through SQLAlchemy Core and psycopg 3 with Alembic migrations ([ADR 0013](adr/0013-database-access.md)), Redis, AWS SQS and S3, Docker, Kubernetes, Terraform, GitHub Actions.
 
 ## Plug-in contract
 
@@ -338,7 +338,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 
 ### CI/CD (GitHub Actions)
 
-- Every PR: the pre-commit hooks (lint, format, type check, unit tests, contract tests against the mock upstream) and a gitleaks scan of the full history; actions are pinned to commit SHAs ([ADR 0006](adr/0006-ci-workflow.md)).
+- Every PR: the pre-commit hooks (lint, format, type check, unit tests, contract tests against the mock upstream), integration tests against the compose services, and a gitleaks scan of the full history; actions are pinned to commit SHAs ([ADR 0006](adr/0006-ci-workflow.md)).
 - Dependabot: security fix PRs as advisories appear, and monthly grouped version updates for Python packages and actions after a 7-day cooldown ([ADR 0007](adr/0007-dependabot.md)).
 - Merge to `main`: build the image, push to ECR tagged with the git SHA. AWS access through GitHub OIDC; no AWS keys stored in GitHub.
 - Deploy: manually triggered workflow that sets the image tag and applies the AWS overlay.
@@ -355,6 +355,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 ### Test layers
 
 - **Unit:** metric functions, alert rules, state transitions, signature verification.
+- **Integration:** code that depends on Postgres behaviour (constraints, transactions, locking) runs against the compose services, marked `integration`. Pre-commit skips them; CI runs them in their own job ([ADR 0015](adr/0015-integration-tests-on-compose.md)).
 - **Contract tests:** a shared suite every plug-in must pass, run against a fake platform: declarations are valid, every job type has examples, payloads survive a JSON round trip, outcomes are namespaced, errors are typed, and (from M2) `render` does no I/O. A guard test fails if a plug-in has no examples.
 - **Recorded fixtures:** real upstream responses (a parsed match, an unparsed match, a wishlist, a price batch) saved once and replayed, so tests never call live APIs.
 - **Mock upstream server:** a small service in the cluster that can return `429`s, slow responses, never-parsed matches and malformed payloads on demand. All drills point at it.
@@ -459,7 +460,7 @@ Pending decisions have no number until their record is written; the ADR column t
 | --- | --- | --- |
 | Plug-in contract shape and what the platform owns | ABC with declared job types, own package | [0008](adr/0008-plugin-contract-shape.md) |
 | HTTP interactions endpoint vs. gateway bot | HTTP endpoint | Pending |
-| Job dedupe in Postgres vs. SQS FIFO deduplication | Postgres `processed_jobs` (works with standard queues and outlives FIFO's dedupe window) | Pending |
+| Job dedupe in Postgres vs. SQS FIFO deduplication | Postgres `processed_jobs` (works with standard queues and outlives FIFO's dedupe window) | [0014](adr/0014-job-dedupe-in-postgres.md) |
 | Side Quest alert dedupe key | Game, shop, price, deal expiry | Pending |
 | Outbound limiter fails closed when Redis is down | Fail closed | Pending |
 | Redis in-cluster vs. ElastiCache | In-cluster | Pending |

@@ -46,8 +46,8 @@ repos:
         pass_filenames: false
 
       - id: pytest
-        name: pytest
-        entry: uv run --locked pytest
+        name: pytest (unit and contract; integration runs in CI)
+        entry: uv run --locked pytest -m "not integration"
         language: system
         types_or: [python, toml]
         pass_filenames: false

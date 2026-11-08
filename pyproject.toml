@@ -4,8 +4,11 @@ version = "0.1.0"
 description = "Discord bot that hosts game-data plug-ins on a shared platform"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "alembic>=1.20.1",
+    "psycopg[binary]>=3.3.8",
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.2",
+    "sqlalchemy[asyncio]>=2.1.8",
 ]
 
 [build-system]
@@ -34,7 +37,7 @@ select = [
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["src", "tests"]
+files = ["src", "tests", "migrations"]
 warn_unreachable = true
 enable_error_code = ["ignore-without-code"]
 
@@ -42,6 +45,10 @@ enable_error_code = ["ignore-without-code"]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib", "-ra"]
 xfail_strict = true
+markers = ["integration: needs the compose services (docker compose up -d --wait)"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
@@ -53,5 +60,10 @@ dev = [
     "mypy>=2.4.1",
     "pre-commit>=4.7.0",
     "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
     "ruff>=0.17.4",
 ]
+
+[tool.alembic]
+script_location = "%(here)s/migrations"
+file_template = "%%(year)d_%%(month).2d_%%(day).2d_%%(rev)s_%%(slug)s"
