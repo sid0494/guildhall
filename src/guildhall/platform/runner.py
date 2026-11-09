@@ -7,6 +7,7 @@ propagate to the caller, since the message cannot be settled safely.
 
 import asyncio
 import logging
+import math
 import random
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from guildhall.contract import (
     Context,
+    Http,
     Job,
     Outcome,
     PermanentError,
@@ -34,12 +36,14 @@ from guildhall.platform.archive import (
     archive_key,
 )
 from guildhall.platform.checks import (
+    MAX_QUEUE_DELAY,
     ContractViolationError,
     check_outcome,
     job_types_by_name,
 )
 from guildhall.platform.dedupe import claim, processed_jobs
 from guildhall.platform.envelope import JobEnvelope
+from guildhall.platform.http import ThrottledError
 from guildhall.platform.logs import bind_job
 from guildhall.platform.outbox import add_events, add_jobs
 from guildhall.platform.queue import ReceivedMessage
@@ -58,6 +62,12 @@ class MessageQueue(Protocol):
         self, message: ReceivedMessage, delay_seconds: int
     ) -> None: ...
     async def dead_letter(self, message: ReceivedMessage, reason: str) -> None: ...
+
+
+class HttpProvider(Protocol):
+    """Each plug-in's `Context.http`; `UpstreamHttp` provides it."""
+
+    def for_plugin(self, plugin: SourcePlugin) -> Http: ...
 
 
 class RunnerSettings(BaseSettings):
@@ -81,6 +91,7 @@ class Status(StrEnum):
     DONE = "done"
     DUPLICATE = "duplicate"
     NOT_READY = "not_ready"
+    DEFERRED = "deferred"
     RETRYING = "retrying"
     DEAD_LETTERED = "dead_lettered"
 
@@ -95,6 +106,7 @@ _LEVELS = {
     Status.DONE: logging.INFO,
     Status.DUPLICATE: logging.INFO,
     Status.NOT_READY: logging.INFO,
+    Status.DEFERRED: logging.INFO,
     Status.RETRYING: logging.WARNING,
     Status.DEAD_LETTERED: logging.ERROR,
 }
@@ -115,6 +127,13 @@ def backoff_seconds(receive_count: int, base: float, cap: float) -> int:
     return round(exponential / 2 + _RANDOM.uniform(0, exponential / 2))
 
 
+def defer_seconds(retry_after: float) -> int:
+    """Retry-after plus up to half again, so deferred jobs don't return together;
+    at most the queue's 15-minute limit."""
+    delay = math.ceil(retry_after * _RANDOM.uniform(1.0, 1.5))
+    return min(int(MAX_QUEUE_DELAY.total_seconds()), max(1, delay))
+
+
 def describe(error: ValidationError) -> str:
     """Field locations and messages only, never the offending input values."""
     return "; ".join(
@@ -130,12 +149,14 @@ class JobRunner:
         engine: AsyncEngine,
         queue: MessageQueue,
         archive: ArchiveStore,
+        http: HttpProvider,
         settings: RunnerSettings,
     ) -> None:
         self._plugins = plugins
         self._engine = engine
         self._queue = queue
         self._archive = archive
+        self._http = http
         self._settings = settings
 
     async def run(self, message: ReceivedMessage) -> RunResult:
@@ -186,6 +207,7 @@ class JobRunner:
         context = Context(
             db=PluginDatabase(self._engine, plugin),
             archive=PluginArchive(self._archive, plugin),
+            http=self._http.for_plugin(plugin),
         )
         job = Job[Any](
             type=envelope.type,
@@ -200,6 +222,8 @@ class JobRunner:
             return await self._dead_letter(message, f"permanent error: {error}")
         except ContractViolationError as error:
             return await self._dead_letter(message, f"contract violation: {error}")
+        except ThrottledError as error:
+            return await self._defer(message, envelope, attempt, error)
         except TimeoutError:
             return await self._retry(
                 message, f"timed out after {self._settings.job_timeout_seconds} s"
@@ -276,6 +300,24 @@ class JobRunner:
             await add_jobs(connection, plugin.name, outcome.jobs)
             await transaction.commit()
             return True
+
+    async def _defer(
+        self,
+        message: ReceivedMessage,
+        envelope: JobEnvelope,
+        attempt: int,
+        error: ThrottledError,
+    ) -> RunResult:
+        """Send the job again later as a new message, keeping its attempt number.
+
+        A new message starts its receive count again, so throttling never moves
+        a job towards the dead-letter queue (docs/adr/0033).
+        """
+        later = envelope.model_copy(update={"attempt": attempt})
+        delay = defer_seconds(error.retry_after)
+        await self._queue.send(later.model_dump_json(), delay_seconds=delay)
+        await self._queue.delete(message)
+        return RunResult(Status.DEFERRED, f"{error} (again in {delay} s)")
 
     async def _retry(self, message: ReceivedMessage, reason: str) -> RunResult:
         delay = backoff_seconds(

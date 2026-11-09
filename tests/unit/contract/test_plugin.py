@@ -10,6 +10,7 @@ from sqlalchemy import Row, Select
 from guildhall.contract import (
     Context,
     ContractModel,
+    HttpResponse,
     Job,
     JobType,
     Outcome,
@@ -17,6 +18,7 @@ from guildhall.contract import (
     SourcePlugin,
     plugin_metadata,
 )
+from guildhall.contract.http import Params
 from guildhall.contract.storage import NAMING_CONVENTION
 
 
@@ -32,6 +34,18 @@ class NoArchive:
 
     async def get(self, kind: str, id: str) -> bytes | None:
         raise AssertionError("unexpected archive read")
+
+
+class NoHttp:
+    """`Context.http` for code that must not call upstream."""
+
+    async def get(self, url: str, *, params: Params | None = None) -> HttpResponse:
+        raise AssertionError("unexpected upstream call")
+
+    async def post(
+        self, url: str, *, params: Params | None = None, json: Any = None
+    ) -> HttpResponse:
+        raise AssertionError("unexpected upstream call")
 
 
 class Ping(ContractModel):
@@ -78,7 +92,9 @@ def test_job_type_handler_runs_with_a_typed_job() -> None:
         type="ping", payload=Ping(message="hi"), dedupe_key="minimal:1", attempt=1
     )
     outcome = asyncio.run(
-        job_type.handler(job, Context(db=NoDatabase(), archive=NoArchive()))
+        job_type.handler(
+            job, Context(db=NoDatabase(), archive=NoArchive(), http=NoHttp())
+        )
     )
     assert outcome == Outcome()
 

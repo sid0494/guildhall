@@ -66,7 +66,9 @@ jobs:
           echo "GUILDHALL_POSTGRES_PASSWORD=${password}" >> "$GITHUB_ENV"
 
       - name: Start the compose services
-        run: docker compose up -d --wait postgres moto
+        # Every infrastructure service, as `docker compose up` does locally, so
+        # a new service is never missing here (the app profile stays off).
+        run: docker compose up -d --wait
 
       - name: Install dependencies from the lockfile
         run: uv sync --locked

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+import httpx
 import pytest
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -30,6 +31,7 @@ from guildhall.platform.archive import ArchiveError
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.dedupe import processed_jobs
 from guildhall.platform.envelope import JobEnvelope
+from guildhall.platform.http import HttpSettings, UpstreamHttp, new_client
 from guildhall.platform.outbox import outbox_events, outbox_jobs
 from guildhall.platform.queue import ReceivedMessage
 from guildhall.platform.runner import JobRunner, RunnerSettings, RunResult, Status
@@ -85,6 +87,32 @@ class FakeArchive:
 
     async def get(self, key: str) -> bytes | None:
         return self.objects.get(key)
+
+
+@dataclass
+class OpenLimiter:
+    """A budget that never runs out; records cooldowns."""
+
+    cooldowns: list[tuple[str, float]] = field(default_factory=list)
+
+    async def acquire(self, plugin: str, policy: RateLimitPolicy) -> float:
+        return 0
+
+    async def cool_down(self, plugin: str, seconds: float) -> None:
+        self.cooldowns.append((plugin, seconds))
+
+
+def fake_upstream(request: httpx.Request) -> httpx.Response:
+    """https://upstream.test/<path>: ok, busy (429, 2 min), swamped (429, 1 h), down."""
+    match request.url.path:
+        case "/ok":
+            return httpx.Response(200, content=b'{"from": "upstream"}')
+        case "/busy":
+            return httpx.Response(429, headers={"Retry-After": "120"})
+        case "/swamped":
+            return httpx.Response(429, headers={"Retry-After": "3600"})
+        case _:
+            return httpx.Response(503)
 
 
 class Ping(ContractModel):
@@ -161,12 +189,29 @@ def archive() -> FakeArchive:
 
 
 @pytest.fixture
+def limiter() -> OpenLimiter:
+    return OpenLimiter()
+
+
+@pytest.fixture
+async def http(limiter: OpenLimiter) -> AsyncIterator[UpstreamHttp]:
+    settings = HttpSettings()
+    transport = httpx.MockTransport(fake_upstream)
+    async with new_client(settings, transport) as client:
+        yield UpstreamHttp(client, limiter, settings)
+
+
+@pytest.fixture
 def runner(
-    engine: AsyncEngine, queue: FakeQueue, archive: FakeArchive, cleanup: None
+    engine: AsyncEngine,
+    queue: FakeQueue,
+    archive: FakeArchive,
+    http: UpstreamHttp,
+    cleanup: None,
 ) -> JobRunner:
     plugins = {"synthetic": SyntheticPlugin(), "misbehaving": Misbehaving()}
     settings = RunnerSettings(job_timeout_seconds=1, archive_timeout_seconds=0.5)
-    return JobRunner(plugins, engine, queue, archive, settings)
+    return JobRunner(plugins, engine, queue, archive, http, settings)
 
 
 def message(body: str, receive_count: int = 1) -> ReceivedMessage:
@@ -332,13 +377,16 @@ async def test_contract_violations_are_dead_lettered(
     assert problem in result.reason
 
 
-async def test_database_outage_is_retried(queue: FakeQueue, run_id: str) -> None:
+async def test_database_outage_is_retried(
+    queue: FakeQueue, http: UpstreamHttp, run_id: str
+) -> None:
     unreachable = create_engine(DatabaseSettings(port=1))
     runner = JobRunner(
         {"synthetic": SyntheticPlugin()},
         unreachable,
         queue,
         FakeArchive(),
+        http,
         RunnerSettings(),
     )
     result = await runner.run(message(synthetic(run_id)))
@@ -544,3 +592,58 @@ async def test_a_slow_upload_times_out_and_retries(
     result = await runner.run(message(synthetic(run_id, archive=True)))
     assert result == RunResult(Status.RETRYING, "archive upload timed out after 0.5 s")
     assert queue.deleted == []
+
+
+async def test_a_fetched_response_can_be_archived(
+    runner: JobRunner, archive: FakeArchive, run_id: str
+) -> None:
+    body = synthetic(run_id, fetch="https://upstream.test/ok", archive=True)
+    assert await runner.run(message(body)) == RunResult(Status.DONE)
+    assert archive.objects == {
+        f"raw/synthetic/work/{run_id}.json": b'{"from": "upstream"}'
+    }
+
+
+async def test_a_throttled_job_is_deferred_keeping_its_attempt(
+    runner: JobRunner,
+    queue: FakeQueue,
+    limiter: OpenLimiter,
+    engine: AsyncEngine,
+    run_id: str,
+) -> None:
+    body = synthetic(run_id, fetch="https://upstream.test/busy", record=True)
+    received = message(body, receive_count=4)  # one receive short of the DLQ
+    result = await runner.run(received)
+
+    assert result.status is Status.DEFERRED
+    ((sent, delay),) = queue.sent
+    assert result.reason == (
+        f"GET upstream.test/busy answered 429 (Too Many Requests) (again in {delay} s)"
+    )
+    assert JobEnvelope.model_validate_json(sent).attempt == 4  # same, not 5
+    assert 120 <= delay <= 180
+    assert queue.deleted == [received]  # a new message: SQS counts from 1 again
+    assert (queue.retried, queue.dead) == ([], [])
+    assert limiter.cooldowns == [("synthetic", 120)]
+    assert await count(engine, processed_jobs, run_id) == 0
+    assert await recorded_attempts(engine, run_id) == []
+
+
+async def test_a_deferral_never_exceeds_the_queues_delay_limit(
+    runner: JobRunner, queue: FakeQueue, run_id: str
+) -> None:
+    await runner.run(message(synthetic(run_id, fetch="https://upstream.test/swamped")))
+    ((_, delay),) = queue.sent
+    assert delay == 900
+
+
+async def test_an_upstream_server_error_is_an_ordinary_retry(
+    runner: JobRunner, queue: FakeQueue, run_id: str
+) -> None:
+    result = await runner.run(
+        message(synthetic(run_id, fetch="https://upstream.test/x"))
+    )
+    assert result == RunResult(
+        Status.RETRYING, "RetryableError: GET upstream.test/x answered 503"
+    )
+    assert queue.sent == []

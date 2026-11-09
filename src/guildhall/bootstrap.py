@@ -15,6 +15,7 @@ from guildhall.contract import SourcePlugin
 from guildhall.platform.archive import ArchiveSettings, open_archive
 from guildhall.platform.consumer import ConsumerSettings, JobConsumer
 from guildhall.platform.database import DatabaseSettings, create_engine
+from guildhall.platform.http import HttpSettings, open_upstream_http
 from guildhall.platform.logs import LogSettings, configure_logging
 from guildhall.platform.queue import QueueSettings, open_job_queue
 from guildhall.platform.registry import build_registry
@@ -41,8 +42,9 @@ async def run_worker(stop: asyncio.Event) -> None:
         async with (
             open_job_queue(QueueSettings()) as queue,
             open_archive(ArchiveSettings()) as archive,
+            open_upstream_http(HttpSettings()) as http,
         ):
-            runner = JobRunner(plugins, engine, queue, archive, RunnerSettings())
+            runner = JobRunner(plugins, engine, queue, archive, http, RunnerSettings())
             worker = Worker(
                 JobConsumer(queue, runner, consumer_settings),
                 OutboxRelay(engine, queue, RelaySettings()),

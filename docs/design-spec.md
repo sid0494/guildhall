@@ -126,8 +126,9 @@ class SourcePlugin(ABC):
 # Every handler has the same shape:
 async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
     """job.payload is already validated against FetchMatch.
-    Read own tables with `await ctx.db.fetch(select(...))` and archived responses
-    with `await ctx.archive.get(kind, id)`. Return
+    Call the upstream with `await ctx.http.get(url)`. Read own tables with
+    `await ctx.db.fetch(select(...))` and archived responses with
+    `await ctx.archive.get(kind, id)`. Return
     Outcome(writes=..., archives=..., events=..., jobs=...) when done, or
     Outcome(retry_in=...) when the work isn't ready yet. Raise RetryableError or
     PermanentError on failure."""
@@ -137,7 +138,8 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - `Outcome(retry_in=...)` is an expected wait, such as a match that isn't parsed yet. The job runs again with `attempt + 1` and it doesn't count as a failure; it emits nothing until it finishes.
 - A plug-in's writes are SQLAlchemy statements in `Outcome.writes`; the platform runs them in the job's transaction, after its dedupe claim and with its outbox rows, so all of it commits or none does ([ADR 0028](adr/0028-plugin-writes-declared-in-the-outcome.md)). Reads go through `ctx.db.fetch`, one read-only transaction per call ([ADR 0030](adr/0030-plugin-reads-through-a-checked-fetch.md)). Tables are declared on the plug-in and migrated in the one Alembic history ([ADR 0029](adr/0029-plugin-tables-and-migrations.md)).
 - Raw upstream responses are kept by returning `Archive(kind, id, body)` in `Outcome.archives`; the platform uploads them to S3 before the job commits, so a committed job's archives always exist, and `ctx.archive.get` reads them back ([ADR 0031](adr/0031-raw-archive-declared-in-the-outcome.md), [ADR 0032](adr/0032-archive-keys-bucket-and-aws-settings.md)).
-- `Context` gains the rate-limited HTTP client (`ctx.http`) later in M2. Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
+- Upstream calls go through `ctx.http.get` and `.post`, which return the contract's own `HttpResponse`. Each call takes from the plug-in's shared budget; a short wait happens in place, while a longer one, a `429` or an unreachable limiter defers the whole job without counting it as an attempt. `5xx`, timeouts and connection failures raise `RetryableError`; every other status is the plug-in's to judge. Handlers must not catch broad exceptions around `ctx.http` ([ADR 0033](adr/0033-throttled-jobs-are-deferred.md), [ADR 0035](adr/0035-plugin-http-contract.md)).
+- Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
 
 ### Rules
 
@@ -145,7 +147,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - Every job and event has a `dedupe_key`, namespaced by plug-in name. The platform guarantees each key takes effect once.
 - Errors are typed. `RetryableError` goes back on the queue with exponential backoff and jitter; `PermanentError` goes to the dead-letter queue with its reason. A payload that fails validation is dead-lettered before plug-in code runs. Handlers run under a timeout ([ADR 0018](adr/0018-job-runner.md)).
 - Handlers share one event loop with the other jobs in their worker: they await I/O and move CPU-heavy work to `asyncio.to_thread`, or every job in the process stalls ([ADR 0021](adr/0021-worker-concurrency.md)).
-- Each plug-in has its own rate-limit bucket, so Side Quest checking prices can't eat Gank Report's OpenDota budget.
+- Each plug-in has its own rate-limit budget, so Side Quest checking prices can't eat Gank Report's OpenDota budget. Errors and logs about upstream calls never include query strings or headers, where API keys go.
 - Each plug-in owns its tables, named `<plug-in>_...`, and never reads or writes another's. Every statement it reads or writes with is checked: tables it doesn't declare and raw SQL text are refused and dead-lettered as contract violations. Likewise it reaches only its own archived responses: the platform adds the `raw/<plug-in>/` prefix, and a kind or id that could leave it is a contract violation.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
 - Available plug-ins are listed in one catalogue (`guildhall.plugins.CATALOGUE`); the enabled ones are named in `GUILDHALL_PLUGINS`. Disabling one is a config change, not a code change, and the platform refuses to start if a name is unknown ([ADR 0011](adr/0011-settings-and-plugin-catalogue.md)).
@@ -307,14 +309,15 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 | A received job starts at once | Each worker runs up to `GUILDHALL_WORKER_CONCURRENCY` jobs and receives only as many messages as it has free slots, so no message waits locally while its visibility timeout runs ([ADR 0021](adr/0021-worker-concurrency.md)) |
 | A follow-up job is never lost | Follow-up jobs go to `outbox_jobs` in the same transaction as the job's writes; a relay in each worker sends them to SQS, locking batches with `FOR UPDATE SKIP LOCKED` so replicas take different rows; a failed relay pass is logged and retried, never ending the worker ([ADR 0016](adr/0016-worker-job-lifecycle.md), [ADR 0019](adr/0019-outbox-relay.md), [ADR 0022](adr/0022-worker-loops.md)) |
 | Bad jobs don't block good ones | After 5 receives, a message moves to the dead-letter queue; permanent failures, invalid payloads, contract violations and disabled plug-ins go there at once with a reason; redrive after a fix |
-| Upstream limits are respected across all replicas | One Redis token bucket per plug-in; `429` responses trigger exponential backoff with jitter |
+| Upstream limits are respected across all replicas | Two moving windows per plug-in (per minute, per day) in Redis, through the `limits` library; a `429` sets a cooldown every replica sees ([ADR 0034](adr/0034-shared-rate-limits-in-redis.md)) |
+| Throttling never fails a job | A job that can't call upstream soon is re-sent later as a new message with the same attempt number, so it is never dead-lettered for it ([ADR 0033](adr/0033-throttled-jobs-are-deferred.md)) |
 | One event, one Discord message (almost) | Events go to `outbox_events` in the same transaction as the data change; the dispatcher posts and records `discord_message_id` |
 | Discord retries don't double-act | `interactions_seen` with a unique constraint on the interaction ID |
 
 ### Two deliberate edge cases
 
 - **Discord accepted the message but the dispatcher crashed before marking it sent.** The retry posts a duplicate. Avoiding it would need a delivery check against Discord on every retry; a rare duplicate message is the cheaper trade.
-- **Redis is down.** The outbound limiter fails closed: workers pause jobs that call upstream APIs rather than risk exceeding someone else's limits. Commands that read only from Postgres keep working.
+- **Redis is down.** The outbound limiter fails closed: jobs that call upstream APIs are deferred every 30–60 s until it returns, rather than risk exceeding someone else's limits. Other jobs, and commands that read only from Postgres, keep working ([ADR 0033](adr/0033-throttled-jobs-are-deferred.md)).
 
 ### Observability
 
@@ -422,7 +425,7 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 ### M2: Gank Report, local
 
 - [ ] `discover`, `fetch_match`, parse-retry, S3 archive, metric registry
-- [ ] Per-plug-in rate limiter with backoff
+- [x] Per-plug-in rate limiter with backoff
 - [ ] Discord endpoint, `/link`, `/match last`, outbox dispatcher
 - [ ] api service in docker-compose
 
@@ -479,7 +482,7 @@ Pending decisions have no number until their record is written; the ADR column t
 | HTTP interactions endpoint vs. gateway bot | HTTP endpoint | Pending |
 | Job dedupe in Postgres vs. SQS FIFO deduplication | Postgres `processed_jobs` (works with standard queues and outlives FIFO's dedupe window) | [0014](adr/0014-job-dedupe-in-postgres.md) |
 | Side Quest alert dedupe key | Game, shop, price, deal expiry | Pending |
-| Outbound limiter fails closed when Redis is down | Fail closed | Pending |
+| Outbound limiter fails closed when Redis is down | Fail closed | [0034](adr/0034-shared-rate-limits-in-redis.md) |
 | Redis in-cluster vs. ElastiCache | In-cluster | Pending |
 | Accept rare duplicate Discord posts on dispatcher crash | Accept | Pending |
 | Metrics stored long format vs. one column per metric | Long format | Pending |

@@ -113,3 +113,11 @@ def test_log_settings_reject_unknown_values(
     monkeypatch.setenv(field, "loud")
     with pytest.raises(ValidationError):
         LogSettings()
+
+
+def test_http_library_lines_are_held_back_even_at_debug(log_lines: LogLines) -> None:
+    # The fixture logs at DEBUG; httpx would otherwise log full URLs at INFO.
+    logging.getLogger("httpx").info("HTTP Request: GET https://x.test/?key=k")
+    logging.getLogger("httpcore.http11").debug("send_request_headers.started")
+    logging.getLogger("httpx").warning("kept")
+    assert [line["event"] for line in log_lines()] == ["kept"]
