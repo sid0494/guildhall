@@ -69,7 +69,9 @@ uv run pytest -m integration        # ...then run them (CI runs them in their ow
 ```
 
 Pre-commit skips integration tests so committing doesn't need Docker running;
-CI always runs them.
+CI always runs them. Integration tests use their own `guildhall_test` database
+on the compose Postgres, created and migrated automatically, so they never touch
+your development data.
 
 ## Workflow
 

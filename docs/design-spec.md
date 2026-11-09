@@ -294,7 +294,7 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 | --- | --- |
 | A job takes effect once, even if delivered twice | SQS is at-least-once; the worker records the job's `dedupe_key` in `processed_jobs` in the same transaction as the job's writes |
 | A crashed worker loses no work | SQS visibility timeout redelivers unacknowledged messages; jobs must be safe to re-run |
-| A follow-up job is never lost | Follow-up jobs go to `outbox_jobs` in the same transaction as the job's writes; a relay sends them to SQS ([ADR 0016](adr/0016-worker-job-lifecycle.md)) |
+| A follow-up job is never lost | Follow-up jobs go to `outbox_jobs` in the same transaction as the job's writes; a relay in each worker sends them to SQS, locking batches with `FOR UPDATE SKIP LOCKED` so replicas take different rows ([ADR 0016](adr/0016-worker-job-lifecycle.md), [ADR 0019](adr/0019-outbox-relay.md)) |
 | Bad jobs don't block good ones | After 5 receives, a message moves to the dead-letter queue; permanent failures, invalid payloads, contract violations and disabled plug-ins go there at once with a reason; redrive after a fix |
 | Upstream limits are respected across all replicas | One Redis token bucket per plug-in; `429` responses trigger exponential backoff with jitter |
 | One event, one Discord message (almost) | Events go to `outbox_events` in the same transaction as the data change; the dispatcher posts and records `discord_message_id` |
@@ -357,7 +357,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 ### Test layers
 
 - **Unit:** metric functions, alert rules, state transitions, signature verification.
-- **Integration:** code that depends on Postgres behaviour (constraints, transactions, locking) runs against the compose services, marked `integration`. Pre-commit skips them; CI runs them in their own job ([ADR 0015](adr/0015-integration-tests-on-compose.md)).
+- **Integration:** code that depends on Postgres behaviour (constraints, transactions, locking) runs against the compose services, in a separate `guildhall_test` database, marked `integration`. Pre-commit skips them; CI runs them in their own job ([ADR 0015](adr/0015-integration-tests-on-compose.md)).
 - **Contract tests:** a shared suite every plug-in must pass, run against a fake platform: declarations are valid, every job type has examples, payloads survive a JSON round trip, outcomes are namespaced, errors are typed, and (from M2) `render` does no I/O. A guard test fails if a plug-in has no examples.
 - **Recorded fixtures:** real upstream responses (a parsed match, an unparsed match, a wishlist, a price batch) saved once and replayed, so tests never call live APIs.
 - **Mock upstream server:** a small service in the cluster that can return `429`s, slow responses, never-parsed matches and malformed payloads on demand. All drills point at it.
