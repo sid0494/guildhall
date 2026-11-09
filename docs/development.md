@@ -61,7 +61,19 @@ one instead.
 
 ## Running the worker
 
-With the services up, the queues created and the migrations applied:
+In containers, the `app` profile adds three services to the infrastructure:
+`migrate` and `queues` bring the schema up to date and create the queues, then
+exit; `worker` starts once both have succeeded.
+
+```sh
+docker compose --profile app up -d --build --wait  # build the image, set up, start the worker
+docker compose logs -f worker                      # follow the worker's log
+docker compose stop worker                         # stop gracefully (SIGTERM, up to 45 s)
+```
+
+On the host instead (for quick iteration; don't run both, or they share the
+queue's messages), with the services up, the queues created and the
+migrations applied:
 
 ```sh
 uv run guildhall-worker
@@ -76,10 +88,22 @@ which takes up to `GUILDHALL_RECEIVE_WAIT_SECONDS` (20). Press Ctrl+C a second
 time to stop at once; running jobs are then redelivered after the visibility
 timeout.
 
+## Container image
+
+The [`Dockerfile`](../Dockerfile) builds the image that every environment runs.
+Only the files allowed by [`.dockerignore`](../.dockerignore) reach the build,
+so `.env` never does.
+
+```sh
+docker build -t guildhall:dev .                       # build; unchanged layers come from the cache
+docker history guildhall:dev                          # list the layers and their sizes
+docker run --rm guildhall:dev id                      # run another command in a throwaway container: shows the user
+```
+
 ## Checks
 
 ```sh
-uv run pre-commit run --all-files   # format, lint, types, unit and contract tests
+uv run pre-commit run --all-files   # format, lint, types, dependency check, unit and contract tests
 uv run pytest -m "not integration"  # unit and contract tests only
 docker compose up -d --wait         # integration tests need the compose services...
 uv run pytest -m integration        # ...then run them (CI runs them in their own job)

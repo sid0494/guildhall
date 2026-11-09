@@ -68,6 +68,9 @@ jobs:
       - name: Start the compose services
         run: docker compose up -d --wait postgres moto
 
+      - name: Build the image
+        run: docker compose --profile app build
+
       - name: Install dependencies from the lockfile
         run: uv sync --locked
 

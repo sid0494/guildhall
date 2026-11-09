@@ -1,0 +1,8 @@
+# The build context is an allowlist: everything is excluded unless listed here,
+# so local files (.env, virtual environments, caches) can never reach an image.
+*
+!pyproject.toml
+!uv.lock
+!src/
+!migrations/
+**/__pycache__

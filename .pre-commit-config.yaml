@@ -45,6 +45,13 @@ repos:
         types_or: [python, pyi, toml]
         pass_filenames: false
 
+      - id: deptry
+        name: deptry (production code imports only runtime dependencies)
+        entry: uv run --locked deptry src migrations
+        language: system
+        types_or: [python, toml]
+        pass_filenames: false
+
       - id: pytest
         name: pytest (unit and contract; integration runs in CI)
         entry: uv run --locked pytest -m "not integration"

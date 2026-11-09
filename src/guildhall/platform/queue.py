@@ -8,11 +8,14 @@ create or reconfigure them.
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from aiobotocore.session import get_session
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from types_aiobotocore_sqs import SQSClient
+
+if TYPE_CHECKING:  # type stubs are a dev dependency, absent from the image
+    from types_aiobotocore_sqs import SQSClient
 
 DEAD_LETTER_REASON = "dead_letter_reason"
 """Message attribute explaining why the platform dead-lettered a job."""
