@@ -345,7 +345,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 
 ### CI/CD (GitHub Actions)
 
-- Every PR: the pre-commit hooks (lint, format, type check, a check that production code imports only runtime dependencies ([ADR 0025](adr/0025-dependency-check-with-deptry.md)), unit tests, contract tests against the mock upstream), integration tests against the compose services, and a gitleaks scan of the full history; actions are pinned to commit SHAs ([ADR 0006](adr/0006-ci-workflow.md)).
+- Every PR: the pre-commit hooks (lint, format, type check, a check that production code imports only runtime dependencies ([ADR 0025](adr/0025-dependency-check-with-deptry.md)), unit tests, contract tests against the mock upstream), integration tests against the compose services, end-to-end tests against the containerised stack ([ADR 0027](adr/0027-end-to-end-tests.md)), and a gitleaks scan of the full history; actions are pinned to commit SHAs ([ADR 0006](adr/0006-ci-workflow.md)).
 - Dependabot: security fix PRs as advisories appear, and monthly grouped version updates for Python packages and actions after a 7-day cooldown ([ADR 0007](adr/0007-dependabot.md)).
 - Merge to `main`: build the image, push to ECR tagged with the git SHA. AWS access through GitHub OIDC; no AWS keys stored in GitHub.
 - Deploy: manually triggered workflow that sets the image tag and applies the AWS overlay.
@@ -363,6 +363,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 
 - **Unit:** metric functions, alert rules, state transitions, signature verification.
 - **Integration:** code that depends on Postgres behaviour (constraints, transactions, locking) runs against the compose services, in a separate `guildhall_test` database, marked `integration`. Pre-commit skips them; CI runs them in their own job ([ADR 0015](adr/0015-integration-tests-on-compose.md)).
+- **End-to-end:** the containerised stack, run as a separate throwaway compose project, driven from outside through the queue and Postgres; `make test-e2e` ([ADR 0027](adr/0027-end-to-end-tests.md)). The first test is M1's acceptance scenario.
 - **Contract tests:** a shared suite every plug-in must pass, run against a fake platform: declarations are valid, every job type has examples, payloads survive a JSON round trip, outcomes are namespaced, errors are typed, and (from M2) `render` does no I/O. A guard test fails if a plug-in has no examples.
 - **Recorded fixtures:** real upstream responses (a parsed match, an unparsed match, a wishlist, a price batch) saved once and replayed, so tests never call live APIs.
 - **Mock upstream server:** a small service in the cluster that can return `429`s, slow responses, never-parsed matches and malformed payloads on demand. All drills point at it.

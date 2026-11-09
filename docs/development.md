@@ -104,7 +104,7 @@ docker run --rm guildhall:dev id                      # run another command in a
 
 ```sh
 uv run pre-commit run --all-files   # format, lint, types, dependency check, unit and contract tests
-uv run pytest -m "not integration"  # unit and contract tests only
+uv run pytest -m "not integration and not end_to_end"  # unit and contract tests only
 docker compose up -d --wait         # integration tests need the compose services...
 uv run pytest -m integration        # ...then run them (CI runs them in their own job)
 ```
@@ -114,11 +114,30 @@ CI always runs them. Integration tests use their own `guildhall_test` database
 on the compose Postgres, created and migrated automatically, so they never touch
 your development data.
 
+### End-to-end tests
+
+End-to-end tests (`tests/end_to_end/`) drive the containerised stack from
+outside: they send jobs to the queue and wait for the results in Postgres. They
+run on their own throwaway stack, the `guildhall-e2e-test` compose project
+(`compose.e2e-test.yaml`), on other ports and with an in-memory database, so
+they never touch the development stack. Plain `pytest` skips them.
+
+```sh
+make test-e2e        # start the test stack, run the tests, remove the stack
+make test-e2e-up     # or keep it running while you debug...
+uv run pytest -m end_to_end
+make test-e2e-down   # ...and remove it afterwards
+```
+
+`make` comes from the `make` package (`sudo apt-get install make`); `make`
+alone lists the targets.
+
 ## Workflow
 
 Changes go through pull requests into `main`, which are squash-merged. CI runs
-the same pre-commit hooks plus a secret scan of the full history, and must pass
-before a pull request can be merged.
+the same pre-commit hooks, the integration tests, the end-to-end tests and a
+secret scan of the full history; all four must pass before a pull request can
+be merged.
 
 Design decisions are recorded in [`docs/adr/`](adr/) using the
 [template](adr/template.md).
