@@ -11,7 +11,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from guildhall.contract import (
@@ -30,7 +30,7 @@ from guildhall.platform.envelope import JobEnvelope
 from guildhall.platform.outbox import outbox_events, outbox_jobs
 from guildhall.platform.queue import ReceivedMessage
 from guildhall.platform.runner import JobRunner, RunnerSettings, RunResult, Status
-from guildhall.plugins.synthetic import SyntheticPlugin
+from guildhall.plugins.synthetic import SyntheticPlugin, records
 
 type LogLines = Callable[[], list[dict[str, Any]]]
 
@@ -69,6 +69,8 @@ class Misbehaving(SourcePlugin):
         return [
             JobType("foreign_key", Ping, self.foreign_key),
             JobType("long_delay", Ping, self.long_delay),
+            JobType("foreign_write", Ping, self.foreign_write),
+            JobType("foreign_read", Ping, self.foreign_read),
         ]
 
     async def foreign_key(self, job: Job[Ping], ctx: Context) -> Outcome:
@@ -80,6 +82,13 @@ class Misbehaving(SourcePlugin):
 
     async def long_delay(self, job: Job[Ping], ctx: Context) -> Outcome:
         return Outcome(retry_in=timedelta(hours=1))
+
+    async def foreign_write(self, job: Job[Ping], ctx: Context) -> Outcome:
+        return Outcome(writes=(insert(records).values(work_id="stolen", attempt=1),))
+
+    async def foreign_read(self, job: Job[Ping], ctx: Context) -> Outcome:
+        await ctx.db.fetch(select(records))
+        return Outcome()
 
 
 @pytest.fixture
@@ -95,6 +104,9 @@ async def cleanup(engine: AsyncEngine, run_id: str) -> AsyncIterator[None]:
             await connection.execute(
                 delete(table).where(table.c.dedupe_key.contains(run_id))
             )
+        await connection.execute(
+            delete(records).where(records.c.work_id.contains(run_id))
+        )
 
 
 @pytest.fixture
@@ -327,3 +339,72 @@ async def test_unreadable_message_is_logged_as_an_error_without_job_fields(
     assert (line["level"], line["status"]) == ("error", "dead_lettered")
     assert line["reason"].startswith("invalid envelope: ")
     assert "dedupe_key" not in line
+
+
+async def recorded_attempts(engine: AsyncEngine, run_id: str) -> list[int]:
+    async with engine.connect() as connection:
+        rows = await connection.execute(
+            select(records.c.attempt).where(records.c.work_id.contains(run_id))
+        )
+    return [row.attempt for row in rows]
+
+
+async def test_plugin_writes_commit_with_the_jobs_claim(
+    runner: JobRunner, engine: AsyncEngine, run_id: str
+) -> None:
+    received = message(synthetic(run_id, record=True), receive_count=2)
+    assert await runner.run(received) == RunResult(Status.DONE)
+    assert await recorded_attempts(engine, run_id) == [2]
+    assert await count(engine, processed_jobs, run_id) == 1
+
+
+async def test_a_duplicate_delivery_does_not_write_again(
+    runner: JobRunner, engine: AsyncEngine, run_id: str
+) -> None:
+    body = synthetic(run_id, record=True)
+    await runner.run(message(body))
+    assert await runner.run(message(body, receive_count=2)) == RunResult(
+        Status.DUPLICATE
+    )
+    assert await recorded_attempts(engine, run_id) == [1]
+
+
+async def test_a_failing_write_rolls_back_the_claim_and_outboxes(
+    runner: JobRunner, queue: FakeQueue, engine: AsyncEngine, run_id: str
+) -> None:
+    async with engine.begin() as connection:  # the row the job will try to insert
+        await connection.execute(insert(records).values(work_id=run_id, attempt=9))
+    body = synthetic(run_id, record=True, fan_out=1, emit_events=1)
+    result = await runner.run(message(body))
+    assert result == RunResult(Status.RETRYING, "database error: IntegrityError")
+    assert queue.deleted == []
+    for table in (processed_jobs, outbox_jobs, outbox_events):
+        assert await count(engine, table, run_id) == 0
+
+
+@pytest.mark.parametrize(
+    ("job_type", "reason"),
+    [
+        (
+            "foreign_write",
+            "contract violation: write touches table 'synthetic_records',"
+            " which 'misbehaving' does not own",
+        ),
+        (
+            "foreign_read",
+            "contract violation: read touches table 'synthetic_records',"
+            " which 'misbehaving' does not own",
+        ),
+    ],
+)
+async def test_touching_another_plugins_table_is_dead_lettered(
+    runner: JobRunner, queue: FakeQueue, run_id: str, job_type: str, reason: str
+) -> None:
+    body = JobEnvelope(
+        plugin="misbehaving",
+        type=job_type,
+        dedupe_key=f"misbehaving:{run_id}",
+        payload={"n": 1},
+    ).model_dump_json()
+    assert await runner.run(message(body)) == RunResult(Status.DEAD_LETTERED, reason)
+    assert len(queue.dead) == 1

@@ -17,6 +17,7 @@ from guildhall.platform.dedupe import processed_jobs
 from guildhall.platform.envelope import JobEnvelope
 from guildhall.platform.outbox import outbox_events, outbox_jobs
 from guildhall.platform.queue import JobQueue, QueueSettings, open_sqs
+from guildhall.plugins.synthetic import records
 
 DEADLINE_SECONDS = 30
 
@@ -52,6 +53,16 @@ async def unsent(engine: AsyncEngine, key_prefix: str) -> int:
     return int(total or 0)
 
 
+async def recorded(engine: AsyncEngine, work_id: str) -> int:
+    async with engine.connect() as connection:
+        total = await connection.scalar(
+            select(func.count())
+            .select_from(records)
+            .where(records.c.work_id == work_id)
+        )
+    return int(total or 0)
+
+
 async def queue_is_empty(settings: QueueSettings) -> bool:
     """No message waiting on the job queue and none being worked on."""
     async with open_sqs(settings) as client:
@@ -77,7 +88,7 @@ async def test_jobs_flow_end_to_end_and_a_duplicate_delivery_is_a_no_op(
         type="work",
         dedupe_key=jobs,
         attempt=1,
-        payload={"work_id": work_id, "fan_out": 3, "emit_events": 2},
+        payload={"work_id": work_id, "fan_out": 3, "emit_events": 2, "record": True},
     ).model_dump_json()
 
     await queue.send(body)
@@ -91,6 +102,7 @@ async def test_jobs_flow_end_to_end_and_a_duplicate_delivery_is_a_no_op(
     assert await count(engine, outbox_jobs, jobs) == 3
     assert await unsent(engine, jobs) == 0
     assert await count(engine, outbox_events, events) == 2
+    assert await recorded(engine, work_id) == 1  # the plug-in's own row
 
     await queue.send(body)  # the same message again, as SQS may deliver it
 
@@ -100,3 +112,4 @@ async def test_jobs_flow_end_to_end_and_a_duplicate_delivery_is_a_no_op(
     assert await count(engine, processed_jobs, jobs) == 4
     assert await count(engine, outbox_jobs, jobs) == 3
     assert await count(engine, outbox_events, events) == 2
+    assert await recorded(engine, work_id) == 1

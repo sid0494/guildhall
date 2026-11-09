@@ -10,16 +10,23 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
+from sqlalchemy import MetaData
 
 from guildhall.contract.models import Job, Outcome, RateLimitPolicy, Schedule
+from guildhall.contract.storage import Database, plugin_metadata
 
 
+@dataclass(frozen=True)
 class Context:
     """Services the platform passes to every handler.
 
-    Deliberately empty for now: the rate-limited HTTP client and storage arrive
-    in M2. Handlers take it from the start so adding them changes no signatures.
+    More services (the rate-limited HTTP client, the raw archive) join as M2
+    goes on; handlers take the context from the start, so adding them changes
+    no signatures.
     """
+
+    db: Database
+    """Reads of the plug-in's own tables; writes go in `Outcome.writes`."""
 
 
 type Handler[P: BaseModel] = Callable[[Job[P], Context], Awaitable[Outcome]]
@@ -39,9 +46,9 @@ class JobType[P: BaseModel]:
 class SourcePlugin(ABC):
     """A game or data source hosted by the platform.
 
-    Subclasses set `name` and `rate_limit` as class attributes and implement
-    `job_types`. Methods added to the contract later come with defaults, so
-    existing plug-ins keep working.
+    Subclasses set `name` and `rate_limit` (and `tables`, if they store data)
+    as class attributes and implement `job_types`. Members added to the
+    contract later come with defaults, so existing plug-ins keep working.
     """
 
     contract_version: ClassVar[int] = 1
@@ -63,3 +70,12 @@ class SourcePlugin(ABC):
     def schedules(self) -> list[Schedule]:
         """Recurring triggers; none by default."""
         return []
+
+    @property
+    def tables(self) -> MetaData:
+        """The tables this plug-in owns, in a `plugin_metadata()`; none by default.
+
+        Every table is named `<plug-in name>_...`. Subclasses set it as a class
+        attribute, like `name`.
+        """
+        return plugin_metadata()

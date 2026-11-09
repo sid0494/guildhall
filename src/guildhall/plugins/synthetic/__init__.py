@@ -9,6 +9,7 @@ from datetime import timedelta
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
+from sqlalchemy import Column, DateTime, Integer, Table, Text, func, insert
 
 from guildhall.contract import (
     Context,
@@ -22,9 +23,26 @@ from guildhall.contract import (
     RateLimitPolicy,
     RetryableError,
     SourcePlugin,
+    plugin_metadata,
 )
 
 NOT_READY_DELAY = timedelta(seconds=1)
+
+metadata = plugin_metadata()
+
+records = Table(
+    "synthetic_records",
+    metadata,
+    Column("work_id", Text, primary_key=True),
+    Column("attempt", Integer, nullable=False),
+    Column(
+        "recorded_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+)
+"""One row per finished job that asked to be recorded, written with its outcome."""
 
 
 class SyntheticWork(ContractModel):
@@ -32,8 +50,9 @@ class SyntheticWork(ContractModel):
 
     Waits `sleep_ms`; returns a retry outcome while `attempt <= not_ready_for`;
     then fails as `fail` says, or finishes with `fan_out` follow-up jobs and
-    `emit_events` events. `fail="crash"` raises an untyped exception on purpose,
-    to drill how the platform handles a broken plug-in.
+    `emit_events` events, writing a row to `synthetic_records` if `record` is
+    set. `fail="crash"` raises an untyped exception on purpose, to drill how
+    the platform handles a broken plug-in.
     """
 
     work_id: Annotated[str, Field(min_length=1, pattern=r"^[A-Za-z0-9._-]+$")]
@@ -42,6 +61,7 @@ class SyntheticWork(ContractModel):
     fail: Literal["none", "retryable", "permanent", "crash"] = "none"
     fan_out: Annotated[int, Field(ge=0, le=1_000)] = 0
     emit_events: Annotated[int, Field(ge=0, le=100)] = 0
+    record: bool = False
 
 
 class WorkDone(Event):
@@ -56,6 +76,7 @@ class WorkDone(Event):
 class SyntheticPlugin(SourcePlugin):
     name = "synthetic"
     rate_limit = RateLimitPolicy(per_minute=6_000, per_day=1_000_000)
+    tables = metadata
 
     def job_types(self) -> list[JobType[Any]]:
         return [JobType("work", SyntheticWork, self.work)]
@@ -93,4 +114,11 @@ class SyntheticPlugin(SourcePlugin):
             )
             for index in range(work.emit_events)
         )
-        return Outcome(events=events, jobs=children)
+        # A plain insert: the platform runs it once, with the job's claim, so a
+        # second run would fail loudly instead of hiding a dedupe bug.
+        writes = (
+            (insert(records).values(work_id=work.work_id, attempt=job.attempt),)
+            if work.record
+            else ()
+        )
+        return Outcome(writes=writes, events=events, jobs=children)

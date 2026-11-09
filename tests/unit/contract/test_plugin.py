@@ -1,9 +1,11 @@
 """Unit tests for the plug-in interface."""
 
 import asyncio
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
+from sqlalchemy import Row, Select
 
 from guildhall.contract import (
     Context,
@@ -13,7 +15,16 @@ from guildhall.contract import (
     Outcome,
     RateLimitPolicy,
     SourcePlugin,
+    plugin_metadata,
 )
+from guildhall.contract.storage import NAMING_CONVENTION
+
+
+class NoDatabase:
+    """`Context.db` for code that must not read: fails the test if it does."""
+
+    async def fetch(self, statement: Select[Any]) -> Sequence[Row[Any]]:
+        raise AssertionError("unexpected database read")
 
 
 class Ping(ContractModel):
@@ -59,5 +70,15 @@ def test_job_type_handler_runs_with_a_typed_job() -> None:
     job = Job[Ping](
         type="ping", payload=Ping(message="hi"), dedupe_key="minimal:1", attempt=1
     )
-    outcome = asyncio.run(job_type.handler(job, Context()))
+    outcome = asyncio.run(job_type.handler(job, Context(db=NoDatabase())))
     assert outcome == Outcome()
+
+
+def test_plugin_owns_no_tables_by_default() -> None:
+    tables = MinimalPlugin().tables
+    assert tables.tables == {}
+    assert dict(tables.naming_convention) == NAMING_CONVENTION
+
+
+def test_plugin_metadata_applies_the_platform_naming_convention() -> None:
+    assert dict(plugin_metadata().naming_convention) == NAMING_CONVENTION
