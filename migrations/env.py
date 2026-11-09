@@ -5,6 +5,7 @@ from sqlalchemy import URL, create_engine
 
 from guildhall.platform import dedupe, outbox
 from guildhall.platform.database import DatabaseSettings, metadata
+from guildhall.platform.logs import LogSettings, configure_logging
 
 TABLE_MODULES = (dedupe, outbox)
 """Modules whose tables migrations manage; importing them registers the tables."""
@@ -40,4 +41,8 @@ def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
+    # Log each step in the platform's format when run as the `alembic` command;
+    # callers of the Python API (the test fixtures) keep their own logging.
+    if context.config.cmd_opts is not None:
+        configure_logging(LogSettings())
     run_migrations_online()

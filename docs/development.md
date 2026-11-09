@@ -61,7 +61,19 @@ one instead.
 
 ## Running the worker
 
-With the services up, the queues created and the migrations applied:
+In containers, the `app` profile adds three services to the infrastructure:
+`migrate` and `queues` bring the schema up to date and create the queues, then
+exit; `worker` starts once both have succeeded.
+
+```sh
+docker compose --profile app up -d --build --wait  # build the image, set up, start the worker
+docker compose logs -f worker                      # follow the worker's log
+docker compose stop worker                         # stop gracefully (SIGTERM, up to 45 s)
+```
+
+On the host instead (for quick iteration; don't run both, or they share the
+queue's messages), with the services up, the queues created and the
+migrations applied:
 
 ```sh
 uv run guildhall-worker

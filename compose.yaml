@@ -1,9 +1,56 @@
-# Local infrastructure for development (docs/adr/0012). The bot itself runs on
-# the host with `uv run` for now. Variables come from .env (see .env.example).
-# Images are pinned by tag and digest; Dependabot keeps them current.
+# Local infrastructure for development (docs/adr/0012), and the bot itself
+# under the "app" profile (docs/adr/0026).
+#
+#   docker compose up -d --wait                  infrastructure only
+#   docker compose --profile app up -d --build   also migrate, create queues, run the worker
+#
+# Compose reads .env to fill in ${...} below (see .env.example). Third-party
+# images are pinned by tag and digest; Dependabot keeps them current.
 name: guildhall
 
+# Shared by every service that runs the Guildhall image. `x-` keys are ignored
+# by compose; the anchor (&) is merged into each service with `<<: *guildhall`.
+x-guildhall: &guildhall
+  build: .
+  image: guildhall:dev
+  profiles: [app]
+  env_file:
+    - path: .env
+      required: false # CI has no .env; it sets variables directly
+  environment:
+    # Inside the compose network, services are reached by name, not 127.0.0.1.
+    GUILDHALL_POSTGRES_HOST: postgres
+    GUILDHALL_POSTGRES_PORT: "5432"
+    GUILDHALL_AWS_ENDPOINT_URL: http://moto:5000
+
 services:
+  migrate:
+    <<: *guildhall
+    # One-shot: bring the schema up to date, then exit.
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  queues:
+    <<: *guildhall
+    # One-shot: create the job queue and its dead-letter queue on moto.
+    command: ["python", "-m", "guildhall.platform.dev_queues"]
+    depends_on:
+      moto:
+        condition: service_healthy
+
+  worker:
+    <<: *guildhall
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      queues:
+        condition: service_completed_successfully
+    # Above drain (35 s) plus outbox flush (5 s), so SIGKILL never cuts a drain
+    # short (docs/adr/0023).
+    stop_grace_period: 45s
+
   postgres:
     image: postgres:18.6-trixie@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
     environment:
