@@ -19,6 +19,11 @@ import structlog
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from structlog.typing import Processor
 
+QUIETED_LOGGERS = ("httpx", "httpcore")
+"""Third-party loggers held at WARNING whatever the level: their INFO and DEBUG
+lines carry full URLs, query strings included, which is where API keys go.
+`Context.http` logs each call itself, without them (docs/adr/0035)."""
+
 
 class LogFormat(StrEnum):
     JSON = "json"
@@ -76,6 +81,8 @@ def configure_logging(settings: LogSettings, stream: TextIO = sys.stdout) -> Non
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(settings.log_level)
+    for name in QUIETED_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 @contextmanager

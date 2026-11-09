@@ -5,6 +5,7 @@ Plug-ins import from this package only, never from `guildhall.platform`.
 
 from guildhall.contract.archive import RawArchive
 from guildhall.contract.errors import PermanentError, RetryableError
+from guildhall.contract.http import Http, HttpResponse
 from guildhall.contract.models import (
     Archive,
     ContractModel,
@@ -25,6 +26,8 @@ __all__ = [
     "Database",
     "Event",
     "Handler",
+    "Http",
+    "HttpResponse",
     "Job",
     "JobSpec",
     "JobType",

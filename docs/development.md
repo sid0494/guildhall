@@ -94,6 +94,19 @@ which takes up to `GUILDHALL_RECEIVE_WAIT_SECONDS` (20). Press Ctrl+C a second
 time to stop at once; running jobs are then redelivered after the visibility
 timeout.
 
+## Upstream rate limits
+
+Each plug-in's upstream budget lives in Redis, shared by every worker. To look
+at it while jobs call upstream:
+
+```sh
+docker compose exec redis redis-cli --scan --pattern 'guildhall:*'   # the budgets and any cooldown
+docker compose exec redis redis-cli pttl guildhall:cooldown:<plug-in>  # milliseconds a 429 still pauses it
+```
+
+When Redis is stopped, jobs that call upstream are logged as `deferred` and
+come back every 30 to 60 seconds until it returns; other jobs carry on.
+
 ## Container image
 
 The [`Dockerfile`](../Dockerfile) builds the image that every environment runs.

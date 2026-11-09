@@ -24,6 +24,7 @@ x-guildhall: &guildhall
     GUILDHALL_POSTGRES_HOST: postgres
     GUILDHALL_POSTGRES_PORT: "5432"
     GUILDHALL_AWS_ENDPOINT_URL: http://moto:5000
+    GUILDHALL_REDIS_URL: redis://redis:6379/0
 
 services:
   migrate:

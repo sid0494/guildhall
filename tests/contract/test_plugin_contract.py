@@ -21,12 +21,14 @@ import guildhall.plugins
 from guildhall.contract import (
     Context,
     ContractModel,
+    HttpResponse,
     Job,
     Outcome,
     PermanentError,
     RetryableError,
     SourcePlugin,
 )
+from guildhall.contract.http import Params
 from guildhall.platform.checks import (
     check_declarations,
     check_outcome,
@@ -48,6 +50,18 @@ class NoArchive:
 
     async def get(self, kind: str, id: str) -> bytes | None:
         raise AssertionError("unexpected archive read")
+
+
+class NoHttp:
+    """`Context.http` for code that must not call upstream."""
+
+    async def get(self, url: str, *, params: Params | None = None) -> HttpResponse:
+        raise AssertionError("unexpected upstream call")
+
+    async def post(
+        self, url: str, *, params: Params | None = None, json: Any = None
+    ) -> HttpResponse:
+        raise AssertionError("unexpected upstream call")
 
 
 @dataclass(frozen=True)
@@ -94,7 +108,9 @@ def run_job(
         attempt=1,
     )
     return asyncio.run(
-        job_type.handler(job, Context(db=NoDatabase(), archive=NoArchive()))
+        job_type.handler(
+            job, Context(db=NoDatabase(), archive=NoArchive(), http=NoHttp())
+        )
     )
 
 

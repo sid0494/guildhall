@@ -11,11 +11,13 @@ from sqlalchemy.sql.dml import Insert
 
 from guildhall.contract import (
     Context,
+    HttpResponse,
     Job,
     Outcome,
     PermanentError,
     RetryableError,
 )
+from guildhall.contract.http import Params
 from guildhall.plugins.synthetic import (
     NOT_READY_DELAY,
     SyntheticPlugin,
@@ -39,6 +41,18 @@ class NoArchive:
         raise AssertionError("unexpected archive read")
 
 
+class NoHttp:
+    """`Context.http` for code that must not call upstream."""
+
+    async def get(self, url: str, *, params: Params | None = None) -> HttpResponse:
+        raise AssertionError("unexpected upstream call")
+
+    async def post(
+        self, url: str, *, params: Params | None = None, json: Any = None
+    ) -> HttpResponse:
+        raise AssertionError("unexpected upstream call")
+
+
 def run(work: SyntheticWork, attempt: int = 1) -> Outcome:
     job = Job[SyntheticWork](
         type="work",
@@ -47,7 +61,9 @@ def run(work: SyntheticWork, attempt: int = 1) -> Outcome:
         attempt=attempt,
     )
     return asyncio.run(
-        SyntheticPlugin().work(job, Context(db=NoDatabase(), archive=NoArchive()))
+        SyntheticPlugin().work(
+            job, Context(db=NoDatabase(), archive=NoArchive(), http=NoHttp())
+        )
     )
 
 
