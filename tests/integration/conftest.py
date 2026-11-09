@@ -1,7 +1,9 @@
 """Fixtures for tests that need the compose services (docs/adr/0015).
 
 Every test under tests/integration is marked `integration`: pre-commit skips
-them and CI runs them in their own job, after `docker compose up`.
+them and CI runs them in their own job, after `docker compose up`. Tests use a
+separate `guildhall_test` database on the same server, so they never touch
+development data.
 """
 
 import uuid
@@ -9,6 +11,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+import sqlalchemy
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -26,15 +29,35 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(pytest.mark.integration)
 
 
-@pytest.fixture(scope="session")
-def migrated_database() -> None:
-    """Bring the database schema up to date once per test session."""
-    command.upgrade(Config(toml_file=str(REPO_ROOT / "pyproject.toml")), "head")
+TEST_DATABASE = "guildhall_test"
 
 
 @pytest.fixture(scope="session")
-async def engine(migrated_database: None) -> AsyncIterator[AsyncEngine]:
-    engine = create_engine(DatabaseSettings())
+def test_database_settings() -> DatabaseSettings:
+    """Create the test database if needed and bring its schema up to date."""
+    server = DatabaseSettings()
+    admin = sqlalchemy.create_engine(server.url(), isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        exists = connection.scalar(
+            sqlalchemy.text("SELECT 1 FROM pg_database WHERE datname = :name"),
+            {"name": TEST_DATABASE},
+        )
+        if not exists:
+            connection.execute(sqlalchemy.text(f'CREATE DATABASE "{TEST_DATABASE}"'))
+    admin.dispose()
+
+    settings = server.model_copy(update={"db": TEST_DATABASE})
+    config = Config(toml_file=str(REPO_ROOT / "pyproject.toml"))
+    config.attributes["url"] = settings.url()
+    command.upgrade(config, "head")
+    return settings
+
+
+@pytest.fixture(scope="session")
+async def engine(
+    test_database_settings: DatabaseSettings,
+) -> AsyncIterator[AsyncEngine]:
+    engine = create_engine(test_database_settings)
     yield engine
     await engine.dispose()
 
