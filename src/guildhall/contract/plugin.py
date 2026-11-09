@@ -23,6 +23,8 @@ class Context:
 
 
 type Handler[P: BaseModel] = Callable[[Job[P], Context], Awaitable[Outcome]]
+"""Handlers share one event loop with every other running job: they must await
+I/O, and move CPU-heavy work off the loop with `asyncio.to_thread`."""
 
 
 @dataclass(frozen=True)

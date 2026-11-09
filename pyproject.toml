@@ -10,7 +10,11 @@ dependencies = [
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.2",
     "sqlalchemy[asyncio]>=2.1.8",
+    "structlog>=26.1.0",
 ]
+
+[project.scripts]
+guildhall-worker = "guildhall.bootstrap:worker_main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14"]
@@ -41,6 +45,8 @@ plugins = ["pydantic.mypy"]
 files = ["src", "tests", "migrations"]
 warn_unreachable = true
 enable_error_code = ["ignore-without-code"]
+mypy_path = "src"
+explicit_package_bases = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
