@@ -1,7 +1,7 @@
 """The SQS job queue and its dead-letter queue.
 
 Queues are created outside the worker: by Terraform on AWS and by
-`guildhall.platform.dev_queues` locally, so the worker needs no permission to
+`guildhall.platform.dev_aws` locally, so the worker needs no permission to
 create or reconfigure them.
 """
 
@@ -10,9 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from aiobotocore.session import get_session
-from pydantic import SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from guildhall.platform.aws import AwsSettings, open_sqs
 
 if TYPE_CHECKING:  # type stubs are a dev dependency, absent from the image
     from types_aiobotocore_sqs import SQSClient
@@ -21,21 +19,7 @@ DEAD_LETTER_REASON = "dead_letter_reason"
 """Message attribute explaining why the platform dead-lettered a job."""
 
 
-class QueueSettings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_prefix="GUILDHALL_",
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-        frozen=True,
-    )
-
-    aws_region: str = "us-east-1"
-    aws_endpoint_url: str | None = None
-    """Set locally to the moto endpoint; unset on AWS."""
-    aws_access_key_id: SecretStr | None = None
-    """Set locally (any value works with moto); on AWS the pod's role is used."""
-    aws_secret_access_key: SecretStr | None = None
+class QueueSettings(AwsSettings):
     jobs_queue_name: str = "guildhall-jobs"
     dead_letter_queue_name: str = "guildhall-jobs-dlq"
     max_receive_count: int = 5
@@ -106,20 +90,6 @@ class JobQueue:
             },
         )
         await self.delete(message)
-
-
-@asynccontextmanager
-async def open_sqs(settings: QueueSettings) -> AsyncIterator[SQSClient]:
-    """An SQS client for the configured region, endpoint and credentials."""
-    key_id, secret = settings.aws_access_key_id, settings.aws_secret_access_key
-    async with get_session().create_client(
-        "sqs",
-        region_name=settings.aws_region,
-        endpoint_url=settings.aws_endpoint_url,
-        aws_access_key_id=key_id.get_secret_value() if key_id else None,
-        aws_secret_access_key=secret.get_secret_value() if secret else None,
-    ) as client:
-        yield client
 
 
 @asynccontextmanager

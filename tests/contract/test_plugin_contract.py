@@ -43,6 +43,13 @@ class NoDatabase:
         raise AssertionError("unexpected database read")
 
 
+class NoArchive:
+    """`Context.archive` for code that must not read archives."""
+
+    async def get(self, kind: str, id: str) -> bytes | None:
+        raise AssertionError("unexpected archive read")
+
+
 @dataclass(frozen=True)
 class PluginCase:
     plugin: SourcePlugin
@@ -57,6 +64,7 @@ CASES = [
                 SyntheticWork(work_id="plain"),
                 SyntheticWork(work_id="busy", fan_out=3, emit_events=2),
                 SyntheticWork(work_id="kept", record=True),
+                SyntheticWork(work_id="archived.1", archive=True),
                 SyntheticWork(work_id="waiting", not_ready_for=1),
                 SyntheticWork(work_id="flaky", fail="retryable"),
                 SyntheticWork(work_id="doomed", fail="permanent"),
@@ -85,7 +93,9 @@ def run_job(
         dedupe_key=f"{plugin.name}:contract-suite",
         attempt=1,
     )
-    return asyncio.run(job_type.handler(job, Context(db=NoDatabase())))
+    return asyncio.run(
+        job_type.handler(job, Context(db=NoDatabase(), archive=NoArchive()))
+    )
 
 
 def discovered_plugin_classes() -> set[type[SourcePlugin]]:

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import Column, Integer, Table, delete, insert, select
 
 from guildhall.contract import (
+    Archive,
     ContractModel,
     Event,
     Job,
@@ -125,13 +126,36 @@ def test_outcome_serialises_the_full_event() -> None:
 
 
 def test_outcome_that_retries_cannot_emit_events() -> None:
-    with pytest.raises(ValidationError, match="cannot write, emit events or ask"):
+    with pytest.raises(
+        ValidationError, match="cannot write, archive, emit events or ask"
+    ):
         Outcome(retry_in=timedelta(minutes=3), events=(make_event(),))
 
 
 def test_outcome_that_retries_cannot_write() -> None:
-    with pytest.raises(ValidationError, match="cannot write, emit events or ask"):
+    with pytest.raises(
+        ValidationError, match="cannot write, archive, emit events or ask"
+    ):
         Outcome(retry_in=timedelta(minutes=3), writes=(insert(items).values(id=1),))
+
+
+def test_outcome_that_retries_cannot_archive() -> None:
+    with pytest.raises(ValidationError, match="cannot write, archive, emit events"):
+        Outcome(
+            retry_in=timedelta(minutes=3),
+            archives=(Archive(kind="match", id="42", body=b"{}"),),
+        )
+
+
+def test_archive_keeps_the_body_as_bytes_exactly() -> None:
+    body = b'{"gpm": 512.0, "kills": 7}'
+    assert Archive(kind="match", id="42", body=body).body == body
+
+
+def test_archive_body_is_left_out_of_its_repr() -> None:
+    # Bodies can be megabytes; logging an outcome must not print them.
+    archive = Archive(kind="match", id="42", body=b"x" * 10_000)
+    assert "body" not in repr(archive)
 
 
 def test_outcome_keeps_its_writes_in_order() -> None:

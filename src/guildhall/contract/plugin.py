@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 from sqlalchemy import MetaData
 
+from guildhall.contract.archive import RawArchive
 from guildhall.contract.models import Job, Outcome, RateLimitPolicy, Schedule
 from guildhall.contract.storage import Database, plugin_metadata
 
@@ -20,13 +21,15 @@ from guildhall.contract.storage import Database, plugin_metadata
 class Context:
     """Services the platform passes to every handler.
 
-    More services (the rate-limited HTTP client, the raw archive) join as M2
-    goes on; handlers take the context from the start, so adding them changes
-    no signatures.
+    More services (the rate-limited HTTP client) join as M2 goes on; handlers
+    take the context from the start, so adding them changes no signatures.
     """
 
     db: Database
     """Reads of the plug-in's own tables; writes go in `Outcome.writes`."""
+    archive: RawArchive
+    """Reads of the plug-in's own archived responses; uploads go in
+    `Outcome.archives`."""
 
 
 type Handler[P: BaseModel] = Callable[[Job[P], Context], Awaitable[Outcome]]

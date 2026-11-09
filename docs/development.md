@@ -36,11 +36,11 @@ docker compose down -v          # also delete the Postgres data volume
 All ports are bound to `127.0.0.1`: Postgres on 5432, Redis on 6379, moto on
 5000.
 
-After starting the services, create the job queue and its dead-letter queue on
-moto (safe to run repeatedly):
+After starting the services, create the job queue, its dead-letter queue and
+the raw archive bucket on moto (safe to run repeatedly):
 
 ```sh
-uv run python -m guildhall.platform.dev_queues
+uv run python -m guildhall.platform.dev_aws
 ```
 
 ## Database migrations
@@ -68,8 +68,8 @@ migration.
 ## Running the worker
 
 In containers, the `app` profile adds three services to the infrastructure:
-`migrate` and `queues` bring the schema up to date and create the queues, then
-exit; `worker` starts once both have succeeded.
+`migrate` and `aws-setup` bring the schema up to date and create the queues
+and the archive bucket, then exit; `worker` starts once both have succeeded.
 
 ```sh
 docker compose --profile app up -d --build --wait  # build the image, set up, start the worker
@@ -78,8 +78,8 @@ docker compose stop worker                         # stop gracefully (SIGTERM, u
 ```
 
 On the host instead (for quick iteration; don't run both, or they share the
-queue's messages), with the services up, the queues created and the
-migrations applied:
+queue's messages), with the services up, the queues and bucket created and
+the migrations applied:
 
 ```sh
 uv run guildhall-worker

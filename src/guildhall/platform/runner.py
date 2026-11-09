@@ -27,6 +27,12 @@ from guildhall.contract import (
     PermanentError,
     SourcePlugin,
 )
+from guildhall.platform.archive import (
+    ArchiveError,
+    ArchiveStore,
+    PluginArchive,
+    archive_key,
+)
 from guildhall.platform.checks import (
     ContractViolationError,
     check_outcome,
@@ -64,7 +70,9 @@ class RunnerSettings(BaseSettings):
     )
 
     job_timeout_seconds: float = 30
-    """Kept below the queue's visibility timeout, so a job never runs twice at once."""
+    archive_timeout_seconds: float = 10
+    """With the job timeout, kept below the queue's visibility timeout, so a job
+    never runs twice at once."""
     retry_base_seconds: float = 20
     retry_cap_seconds: float = 900
 
@@ -121,11 +129,13 @@ class JobRunner:
         plugins: Mapping[str, SourcePlugin],
         engine: AsyncEngine,
         queue: MessageQueue,
+        archive: ArchiveStore,
         settings: RunnerSettings,
     ) -> None:
         self._plugins = plugins
         self._engine = engine
         self._queue = queue
+        self._archive = archive
         self._settings = settings
 
     async def run(self, message: ReceivedMessage) -> RunResult:
@@ -173,7 +183,10 @@ class JobRunner:
                 message, f"invalid payload: {describe(error)}"
             )
 
-        context = Context(db=PluginDatabase(self._engine, plugin))
+        context = Context(
+            db=PluginDatabase(self._engine, plugin),
+            archive=PluginArchive(self._archive, plugin),
+        )
         job = Job[Any](
             type=envelope.type,
             payload=payload,
@@ -210,12 +223,31 @@ class JobRunner:
             await self._queue.delete(message)
             return RunResult(Status.NOT_READY)
 
+        # Before the commit, so a committed job's archives always exist; a
+        # failure here commits nothing and the job runs again (docs/adr/0031).
+        try:
+            async with asyncio.timeout(self._settings.archive_timeout_seconds):
+                await self._upload(plugin, outcome)
+        except ArchiveError as error:
+            return await self._retry(message, f"archive error: {error}")
+        except TimeoutError:
+            return await self._retry(
+                message,
+                "archive upload timed out after"
+                f" {self._settings.archive_timeout_seconds} s",
+            )
+
         try:
             committed = await self._commit(plugin, envelope, outcome)
         except SQLAlchemyError as error:
             return await self._retry(message, f"database error: {type(error).__name__}")
         await self._queue.delete(message)
         return RunResult(Status.DONE if committed else Status.DUPLICATE)
+
+    async def _upload(self, plugin: SourcePlugin, outcome: Outcome) -> None:
+        for archive in outcome.archives:
+            key = archive_key(plugin.name, archive.kind, archive.id)
+            await self._archive.put(key, archive.body)
 
     async def _already_processed(self, dedupe_key: str) -> bool:
         async with self._engine.connect() as connection:

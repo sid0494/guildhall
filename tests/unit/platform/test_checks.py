@@ -22,6 +22,7 @@ from sqlalchemy import (
 )
 
 from guildhall.contract import (
+    Archive,
     Context,
     ContractModel,
     Event,
@@ -35,6 +36,7 @@ from guildhall.contract import (
     plugin_metadata,
 )
 from guildhall.platform.checks import (
+    check_archive_key,
     check_declarations,
     check_outcome,
     check_read,
@@ -303,4 +305,51 @@ def test_writes_to_tables_the_plugin_does_not_own_are_reported() -> None:
     outcome = Outcome(writes=(insert(others).values(id=1),))
     assert check_outcome(Storing(), outcome) == [
         "write touches table 'other_things', which 'sample' does not own"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "id"),
+    [("match", "8123456789"), ("price_history", "app-570.us"), ("m", "x" * 200)],
+)
+def test_archive_keys_that_stay_in_their_folder_are_allowed(kind: str, id: str) -> None:
+    assert check_archive_key(kind, id) == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "id", "problem"),
+    [
+        ("match", "../../other_plugin/match/1", "archive id"),
+        ("match", "a/b", "archive id"),
+        ("match", ".hidden", "archive id"),
+        ("match", "..", "archive id"),
+        ("match", "x" * 201, "archive id"),
+        ("Match", "1", "archive kind"),
+        ("../match", "1", "archive kind"),
+        ("match/raw", "1", "archive kind"),
+    ],
+)
+def test_archive_keys_that_could_leave_their_folder_are_refused(
+    kind: str, id: str, problem: str
+) -> None:
+    (reported,) = check_archive_key(kind, id)
+    assert reported.startswith(problem)
+
+
+def test_outcome_archives_are_checked() -> None:
+    outcome = Outcome(
+        archives=(
+            Archive(kind="match", id="1", body=b"{}"),
+            Archive(kind="match", id="../2", body=b"{}"),
+        )
+    )
+    (problem,) = check_outcome(Sample(), outcome)
+    assert problem.startswith("archive id '../2'")
+
+
+def test_archiving_the_same_response_twice_in_one_outcome_is_reported() -> None:
+    first = Archive(kind="match", id="1", body=b"{}")
+    second = Archive(kind="match", id="1", body=b'{"parsed": true}')
+    assert check_outcome(Sample(), Outcome(archives=(first, second))) == [
+        "archive 'match' '1' is declared more than once"
     ]

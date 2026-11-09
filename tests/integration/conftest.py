@@ -16,8 +16,9 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from guildhall.platform.archive import ArchiveSettings, S3ArchiveStore, open_archive
 from guildhall.platform.database import DatabaseSettings, create_engine
-from guildhall.platform.dev_queues import ensure_queues
+from guildhall.platform.dev_aws import ensure_bucket, ensure_queues
 from guildhall.platform.queue import JobQueue, QueueSettings, open_job_queue
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -87,3 +88,16 @@ async def job_queue(queue_settings: QueueSettings) -> AsyncIterator[JobQueue]:
     await ensure_queues(queue_settings)
     async with open_job_queue(queue_settings) as queue:
         yield queue
+
+
+@pytest.fixture
+def archive_settings() -> ArchiveSettings:
+    """A bucket name unique to this test, so tests never share archived objects."""
+    return ArchiveSettings(archive_bucket=f"test-raw-{uuid.uuid4().hex[:12]}")
+
+
+@pytest.fixture
+async def archive(archive_settings: ArchiveSettings) -> AsyncIterator[S3ArchiveStore]:
+    await ensure_bucket(archive_settings)
+    async with open_archive(archive_settings) as archive:
+        yield archive

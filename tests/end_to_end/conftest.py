@@ -13,6 +13,8 @@ import pytest
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from guildhall.platform.archive import ArchiveSettings, S3ArchiveStore, open_archive
+from guildhall.platform.aws import AwsSettings
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.queue import JobQueue, QueueSettings, open_job_queue
 
@@ -34,9 +36,9 @@ async def engine() -> AsyncIterator[AsyncEngine]:
     await engine.dispose()
 
 
-@pytest.fixture
-def queue_settings() -> QueueSettings:
-    return QueueSettings(
+def on_test_moto[S: AwsSettings](settings: type[S]) -> S:
+    """Settings pointing at the test stack's moto."""
+    return settings(
         aws_endpoint_url=MOTO_URL,
         # moto accepts any credentials; these match compose.e2e-test.yaml.
         aws_access_key_id=SecretStr("moto-e2e-test"),
@@ -45,6 +47,18 @@ def queue_settings() -> QueueSettings:
 
 
 @pytest.fixture
+def queue_settings() -> QueueSettings:
+    return on_test_moto(QueueSettings)
+
+
+@pytest.fixture
 async def queue(queue_settings: QueueSettings) -> AsyncIterator[JobQueue]:
     async with open_job_queue(queue_settings) as queue:
         yield queue
+
+
+@pytest.fixture
+async def archive() -> AsyncIterator[S3ArchiveStore]:
+    """The stack's archive bucket, created by its aws-setup service."""
+    async with open_archive(on_test_moto(ArchiveSettings)) as archive:
+        yield archive

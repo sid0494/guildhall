@@ -4,6 +4,7 @@ Runs against real Postgres, with a fake queue that records what the runner
 told it to do.
 """
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from sqlalchemy import delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from guildhall.contract import (
+    Archive,
     Context,
     ContractModel,
     Job,
@@ -24,6 +26,7 @@ from guildhall.contract import (
     RateLimitPolicy,
     SourcePlugin,
 )
+from guildhall.platform.archive import ArchiveError
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.dedupe import processed_jobs
 from guildhall.platform.envelope import JobEnvelope
@@ -55,6 +58,35 @@ class FakeQueue:
         self.dead.append((message, reason))
 
 
+@dataclass
+class FakeArchive:
+    """Records uploads; can fail them, slow them, or watch the claim while they run."""
+
+    objects: dict[str, bytes] = field(default_factory=dict)
+    fail: bool = False
+    delay_seconds: float = 0
+    engine: AsyncEngine | None = None
+    watched_key: str = ""
+    claimed_during_upload: list[bool] = field(default_factory=list)
+
+    async def put(self, key: str, body: bytes) -> None:
+        await asyncio.sleep(self.delay_seconds)
+        if self.fail:
+            raise ArchiveError("upload failed: InternalError")
+        if self.engine is not None:
+            async with self.engine.connect() as connection:
+                claim = await connection.scalar(
+                    select(processed_jobs.c.dedupe_key).where(
+                        processed_jobs.c.dedupe_key == self.watched_key
+                    )
+                )
+            self.claimed_during_upload.append(claim is not None)
+        self.objects[key] = body
+
+    async def get(self, key: str) -> bytes | None:
+        return self.objects.get(key)
+
+
 class Ping(ContractModel):
     n: int
 
@@ -71,6 +103,8 @@ class Misbehaving(SourcePlugin):
             JobType("long_delay", Ping, self.long_delay),
             JobType("foreign_write", Ping, self.foreign_write),
             JobType("foreign_read", Ping, self.foreign_read),
+            JobType("archive_escape", Ping, self.archive_escape),
+            JobType("archive_read_escape", Ping, self.archive_read_escape),
         ]
 
     async def foreign_key(self, job: Job[Ping], ctx: Context) -> Outcome:
@@ -88,6 +122,13 @@ class Misbehaving(SourcePlugin):
 
     async def foreign_read(self, job: Job[Ping], ctx: Context) -> Outcome:
         await ctx.db.fetch(select(records))
+        return Outcome()
+
+    async def archive_escape(self, job: Job[Ping], ctx: Context) -> Outcome:
+        return Outcome(archives=(Archive(kind="work", id="../synthetic", body=b"{}"),))
+
+    async def archive_read_escape(self, job: Job[Ping], ctx: Context) -> Outcome:
+        await ctx.archive.get("work", "../../synthetic/work/1")
         return Outcome()
 
 
@@ -115,9 +156,17 @@ def queue() -> FakeQueue:
 
 
 @pytest.fixture
-def runner(engine: AsyncEngine, queue: FakeQueue, cleanup: None) -> JobRunner:
+def archive() -> FakeArchive:
+    return FakeArchive()
+
+
+@pytest.fixture
+def runner(
+    engine: AsyncEngine, queue: FakeQueue, archive: FakeArchive, cleanup: None
+) -> JobRunner:
     plugins = {"synthetic": SyntheticPlugin(), "misbehaving": Misbehaving()}
-    return JobRunner(plugins, engine, queue, RunnerSettings(job_timeout_seconds=1))
+    settings = RunnerSettings(job_timeout_seconds=1, archive_timeout_seconds=0.5)
+    return JobRunner(plugins, engine, queue, archive, settings)
 
 
 def message(body: str, receive_count: int = 1) -> ReceivedMessage:
@@ -286,7 +335,11 @@ async def test_contract_violations_are_dead_lettered(
 async def test_database_outage_is_retried(queue: FakeQueue, run_id: str) -> None:
     unreachable = create_engine(DatabaseSettings(port=1))
     runner = JobRunner(
-        {"synthetic": SyntheticPlugin()}, unreachable, queue, RunnerSettings()
+        {"synthetic": SyntheticPlugin()},
+        unreachable,
+        queue,
+        FakeArchive(),
+        RunnerSettings(),
     )
     result = await runner.run(message(synthetic(run_id)))
     await unreachable.dispose()
@@ -408,3 +461,86 @@ async def test_touching_another_plugins_table_is_dead_lettered(
     ).model_dump_json()
     assert await runner.run(message(body)) == RunResult(Status.DEAD_LETTERED, reason)
     assert len(queue.dead) == 1
+
+
+@pytest.mark.parametrize(
+    ("job_type", "reason"),
+    [
+        (
+            "archive_escape",
+            "contract violation: archive id '../synthetic' must match",
+        ),
+        (
+            "archive_read_escape",
+            "contract violation: archive read archive id '../../synthetic/work/1'"
+            " must match",
+        ),
+    ],
+)
+async def test_reaching_outside_the_plugins_archive_is_dead_lettered(
+    runner: JobRunner,
+    queue: FakeQueue,
+    archive: FakeArchive,
+    run_id: str,
+    job_type: str,
+    reason: str,
+) -> None:
+    body = JobEnvelope(
+        plugin="misbehaving",
+        type=job_type,
+        dedupe_key=f"misbehaving:{run_id}",
+        payload={"n": 1},
+    ).model_dump_json()
+    result = await runner.run(message(body))
+    assert result.status is Status.DEAD_LETTERED
+    assert result.reason is not None
+    assert result.reason.startswith(reason)
+    assert archive.objects == {}
+
+
+async def test_declared_archives_are_uploaded_under_the_plugins_folder(
+    runner: JobRunner, archive: FakeArchive, run_id: str
+) -> None:
+    assert await runner.run(message(synthetic(run_id, archive=True))) == RunResult(
+        Status.DONE
+    )
+    (key,) = archive.objects
+    assert key == f"raw/synthetic/work/{run_id}.json"
+    assert b'"archive":true' in archive.objects[key]
+
+
+async def test_archives_are_uploaded_before_the_job_commits(
+    runner: JobRunner, archive: FakeArchive, engine: AsyncEngine, run_id: str
+) -> None:
+    archive.engine, archive.watched_key = engine, f"synthetic:work:{run_id}"
+    await runner.run(message(synthetic(run_id, archive=True)))
+    assert archive.claimed_during_upload == [False]
+    assert await count(engine, processed_jobs, run_id) == 1
+
+
+async def test_a_failed_upload_commits_nothing_and_retries(
+    runner: JobRunner,
+    queue: FakeQueue,
+    archive: FakeArchive,
+    engine: AsyncEngine,
+    run_id: str,
+) -> None:
+    archive.fail = True
+    body = synthetic(run_id, archive=True, record=True, fan_out=1, emit_events=1)
+    result = await runner.run(message(body))
+    assert result == RunResult(
+        Status.RETRYING, "archive error: upload failed: InternalError"
+    )
+    assert queue.deleted == []
+    assert await recorded_attempts(engine, run_id) == []
+    for table in (processed_jobs, outbox_jobs, outbox_events):
+        assert await count(engine, table, run_id) == 0
+
+
+async def test_a_slow_upload_times_out_and_retries(
+    runner: JobRunner, queue: FakeQueue, archive: FakeArchive, run_id: str
+) -> None:
+    archive.delay_seconds = 2
+    result = await runner.run(message(synthetic(run_id, archive=True)))
+    assert result == RunResult(Status.RETRYING, "archive upload timed out after 0.5 s")
+    assert queue.deleted == []

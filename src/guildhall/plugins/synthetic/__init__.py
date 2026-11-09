@@ -12,6 +12,7 @@ from pydantic import Field
 from sqlalchemy import Column, DateTime, Integer, Table, Text, func, insert
 
 from guildhall.contract import (
+    Archive,
     Context,
     ContractModel,
     Event,
@@ -51,7 +52,8 @@ class SyntheticWork(ContractModel):
     Waits `sleep_ms`; returns a retry outcome while `attempt <= not_ready_for`;
     then fails as `fail` says, or finishes with `fan_out` follow-up jobs and
     `emit_events` events, writing a row to `synthetic_records` if `record` is
-    set. `fail="crash"` raises an untyped exception on purpose, to drill how
+    set and archiving its own payload as kind "work" if `archive` is set.
+    `fail="crash"` raises an untyped exception on purpose, to drill how
     the platform handles a broken plug-in.
     """
 
@@ -62,6 +64,7 @@ class SyntheticWork(ContractModel):
     fan_out: Annotated[int, Field(ge=0, le=1_000)] = 0
     emit_events: Annotated[int, Field(ge=0, le=100)] = 0
     record: bool = False
+    archive: bool = False
 
 
 class WorkDone(Event):
@@ -121,4 +124,14 @@ class SyntheticPlugin(SourcePlugin):
             if work.record
             else ()
         )
-        return Outcome(writes=writes, events=events, jobs=children)
+        # Stands in for a raw upstream response: the payload, as received.
+        archives = (
+            (
+                Archive(
+                    kind="work", id=work.work_id, body=work.model_dump_json().encode()
+                ),
+            )
+            if work.archive
+            else ()
+        )
+        return Outcome(writes=writes, archives=archives, events=events, jobs=children)

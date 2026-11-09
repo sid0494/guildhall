@@ -15,7 +15,7 @@ test-e2e: ## Run the end-to-end tests on a throwaway stack, then remove it
 	@trap '$(E2E_TEST) down --volumes --remove-orphans' EXIT; \
 	$(E2E_TEST) up --detach --build --wait \
 		&& uv run --locked pytest -m end_to_end \
-		|| { $(E2E_TEST) logs migrate queues worker; exit 1; }
+		|| { $(E2E_TEST) logs migrate aws-setup worker; exit 1; }
 
 test-e2e-up: ## Start the end-to-end test stack and leave it running
 	$(E2E_TEST) up --detach --build --wait

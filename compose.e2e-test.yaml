@@ -32,7 +32,7 @@ services:
   migrate:
     <<: *test-settings
 
-  queues:
+  aws-setup:
     <<: *test-settings
     environment:
       # moto accepts any credentials; these reach only the emulator.
