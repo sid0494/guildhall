@@ -21,6 +21,7 @@ from guildhall.platform.queue import QueueSettings, open_job_queue
 from guildhall.platform.registry import build_registry
 from guildhall.platform.relay import OutboxRelay, RelaySettings
 from guildhall.platform.runner import JobRunner, RunnerSettings
+from guildhall.platform.scheduler import Scheduler
 from guildhall.platform.settings import Settings
 from guildhall.platform.worker import Worker, WorkerSettings
 from guildhall.plugins import CATALOGUE
@@ -48,6 +49,7 @@ async def run_worker(stop: asyncio.Event) -> None:
             worker = Worker(
                 JobConsumer(queue, runner, consumer_settings),
                 OutboxRelay(engine, queue, RelaySettings()),
+                Scheduler(plugins, engine),
                 WorkerSettings(),
             )
             _log.info(

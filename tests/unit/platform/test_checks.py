@@ -32,6 +32,7 @@ from guildhall.contract import (
     Outcome,
     RateLimitPolicy,
     Schedule,
+    ScheduledRun,
     SourcePlugin,
     plugin_metadata,
 )
@@ -79,6 +80,7 @@ class Sample(SourcePlugin):
         self._job_types = job_types or [
             JobType("ping", Ping, handle),
             JobType("pong", Pong, handle),
+            JobType("tick", ScheduledRun, handle),
         ]
         self._schedules = schedules or []
 
@@ -90,7 +92,7 @@ class Sample(SourcePlugin):
 
 
 def test_valid_plugin_has_no_problems() -> None:
-    plugin = Sample(schedules=[Schedule(job_type="ping", cron="* * * * *")])
+    plugin = Sample(schedules=[Schedule(job_type="tick", cron="*/15 * * * *")])
     assert check_declarations(plugin) == []
 
 
@@ -128,6 +130,31 @@ def test_payload_model_must_be_a_contract_model() -> None:
 def test_schedule_must_name_a_declared_job_type() -> None:
     plugin = Sample(schedules=[Schedule(job_type="missing", cron="* * * * *")])
     assert any("'missing'" in p for p in check_declarations(plugin))
+
+
+def test_a_scheduled_job_type_must_take_a_scheduled_run() -> None:
+    plugin = Sample(schedules=[Schedule(job_type="ping", cron="* * * * *")])
+    assert check_declarations(plugin) == [
+        "scheduled job type 'ping' must take ScheduledRun as its payload"
+    ]
+
+
+@pytest.mark.parametrize("cron", ["61 * * * *", "* * * *", "every hour", "@daily x"])
+def test_a_schedule_needs_a_valid_cron_expression(cron: str) -> None:
+    plugin = Sample(schedules=[Schedule(job_type="tick", cron=cron)])
+    assert check_declarations(plugin) == [
+        f"schedule for 'tick' has an invalid cron expression {cron!r}"
+    ]
+
+
+def test_a_job_type_is_scheduled_at_most_once() -> None:
+    plugin = Sample(
+        schedules=[
+            Schedule(job_type="tick", cron="0 * * * *"),
+            Schedule(job_type="tick", cron="30 * * * *"),
+        ]
+    )
+    assert check_declarations(plugin) == ["job type 'tick' is scheduled more than once"]
 
 
 def test_all_problems_are_reported_together() -> None:

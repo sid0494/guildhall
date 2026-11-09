@@ -3,12 +3,12 @@
 from alembic import context
 from sqlalchemy import URL, create_engine
 
-from guildhall.platform import dedupe, outbox
+from guildhall.platform import accounts, dedupe, outbox, scheduler
 from guildhall.platform.database import DatabaseSettings, metadata
 from guildhall.platform.logs import LogSettings, configure_logging
 from guildhall.plugins import CATALOGUE
 
-TABLE_MODULES = (dedupe, outbox)
+TABLE_MODULES = (accounts, dedupe, outbox, scheduler)
 """Modules whose tables migrations manage; importing them registers the tables."""
 
 TARGET_METADATA = [metadata, *(plugin().tables for plugin in CATALOGUE.values())]

@@ -1,16 +1,19 @@
-"""The worker process: consumer, outbox relay and pruning side by side (docs/adr/0022).
+"""The worker process: consumer, outbox relay, scheduler and pruning side by side.
 
-The three loops run as sibling tasks in one `asyncio.TaskGroup`. Each loop
+The four loops run as sibling tasks in one `asyncio.TaskGroup` (docs/adr/0022,
+docs/adr/0036). Each loop
 recovers from a failed pass in place, by logging it and pausing, so a database
 or queue outage pauses work instead of ending the process.
 
 Stopping (docs/adr/0023): the consumer stops receiving and drains its jobs
-while the relay keeps sending their follow-up jobs; then pruning is cancelled
-and the relay makes final passes until the outbox is empty, within a deadline.
+while the relay keeps sending their follow-up jobs; then the scheduler and
+pruning are cancelled and the relay makes final passes until the outbox is
+empty, within a deadline.
 """
 
 import asyncio
 import contextlib
+from datetime import UTC, datetime
 from typing import Protocol
 
 import structlog
@@ -33,6 +36,12 @@ class Relay(Protocol):
     async def prune(self) -> int: ...
 
 
+class Scheduler(Protocol):
+    """Turns due schedule ticks into jobs; `guildhall.platform.scheduler` has it."""
+
+    async def fire_due(self, now: datetime) -> int: ...
+
+
 class WorkerSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GUILDHALL_",
@@ -44,6 +53,9 @@ class WorkerSettings(BaseSettings):
 
     prune_interval_seconds: float = Field(default=3600, gt=0)
     """How often sent outbox rows past their retention are deleted."""
+    schedule_interval_seconds: float = Field(default=30, gt=0)
+    """How often the worker looks for due schedule ticks; cron's resolution is
+    a minute."""
 
 
 class Worker:
@@ -51,6 +63,7 @@ class Worker:
         self,
         consumer: Consumer,
         relay: Relay,
+        scheduler: Scheduler,
         settings: WorkerSettings,
         *,
         relay_idle_seconds: float = 1,
@@ -59,18 +72,22 @@ class Worker:
     ) -> None:
         self._consumer = consumer
         self._relay = relay
+        self._scheduler = scheduler
         self._settings = settings
         self._relay_idle_seconds = relay_idle_seconds
         self._error_pause_seconds = error_pause_seconds
         self._flush_seconds = flush_seconds
 
     async def run(self, stop: asyncio.Event) -> None:
-        """Run the consumer, relay and prune loops until `stop`, then wind down."""
+        """Run the consumer, relay, schedule and prune loops until `stop`, then
+        wind down."""
         finishing = asyncio.Event()
         async with asyncio.TaskGroup() as loops:
             relay = loops.create_task(self._relay_loop(finishing))
+            schedule = loops.create_task(self._schedule_loop())
             prune = loops.create_task(self._prune_loop())
             await self._consumer.consume(stop)
+            schedule.cancel()
             prune.cancel()
             finishing.set()
             _, left = await asyncio.wait({relay}, timeout=self._flush_seconds)
@@ -101,6 +118,15 @@ class Worker:
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(self._relay_idle_seconds):
                     await finishing.wait()
+
+    async def _schedule_loop(self) -> None:
+        """Fire due ticks at start-up, then every interval; a failure waits."""
+        while True:
+            try:
+                await self._scheduler.fire_due(datetime.now(UTC))
+            except Exception:
+                _log.warning("schedule pass failed", exc_info=True)
+            await asyncio.sleep(self._settings.schedule_interval_seconds)
 
     async def _prune_loop(self) -> None:
         """Prune at start-up, then every interval; a failure waits for the next."""
