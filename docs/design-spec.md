@@ -295,6 +295,7 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 | --- | --- |
 | A job takes effect once, even if delivered twice | SQS is at-least-once; the worker records the job's `dedupe_key` in `processed_jobs` in the same transaction as the job's writes |
 | A crashed worker loses no work | SQS visibility timeout redelivers unacknowledged messages; jobs must be safe to re-run |
+| Stopping a worker wastes no work | On SIGTERM a worker starts no new receive, lets the one in progress finish and hands back what it returns, drains running jobs up to a deadline above the job timeout, then flushes the outbox; the grace period (compose, Kubernetes) is set above drain plus flush ([ADR 0023](adr/0023-graceful-shutdown.md)) |
 | A received job starts at once | Each worker runs up to `GUILDHALL_WORKER_CONCURRENCY` jobs and receives only as many messages as it has free slots, so no message waits locally while its visibility timeout runs ([ADR 0021](adr/0021-worker-concurrency.md)) |
 | A follow-up job is never lost | Follow-up jobs go to `outbox_jobs` in the same transaction as the job's writes; a relay in each worker sends them to SQS, locking batches with `FOR UPDATE SKIP LOCKED` so replicas take different rows; a failed relay pass is logged and retried, never ending the worker ([ADR 0016](adr/0016-worker-job-lifecycle.md), [ADR 0019](adr/0019-outbox-relay.md), [ADR 0022](adr/0022-worker-loops.md)) |
 | Bad jobs don't block good ones | After 5 receives, a message moves to the dead-letter queue; permanent failures, invalid payloads, contract violations and disabled plug-ins go there at once with a reason; redrive after a fix |
@@ -402,7 +403,7 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 ### M1: Platform skeleton
 
 - [ ] Plug-in contract, registry and contract test suite
-- [ ] Worker loop with dedupe, typed errors and dead-letter handling
+- [x] Worker loop with dedupe, typed errors and dead-letter handling
 - [ ] docker-compose with api, worker, Postgres, Redis, moto
 
 **Done when:** a fake plug-in's jobs flow end to end and a duplicate delivery is a no-op.

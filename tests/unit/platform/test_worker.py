@@ -1,4 +1,4 @@
-"""Unit tests for the worker's loops: adaptive relay polling, recovery in place."""
+"""Unit tests for the worker's loops: relay polling, recovery, stopping."""
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
@@ -14,11 +14,15 @@ type LogLines = Callable[[], list[dict[str, Any]]]
 
 @dataclass
 class FakeConsumer:
-    running: bool = False
+    """Runs until stopped, then drains until `drained` is set."""
 
-    async def consume(self) -> None:
+    running: bool = False
+    drained: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def consume(self, stop: asyncio.Event) -> None:
         self.running = True
-        await asyncio.Event().wait()  # until cancelled
+        await stop.wait()
+        await self.drained.wait()
 
 
 @dataclass
@@ -29,9 +33,12 @@ class FakeRelay:
     prunes: list[int | Exception] = field(default_factory=list)
     relay_calls: int = 0
     prune_calls: int = 0
+    hang: bool = False
 
     async def relay_once(self) -> int:
         self.relay_calls += 1
+        if self.hang:
+            await asyncio.Event().wait()
         return self._next(self.passes)
 
     async def prune(self) -> int:
@@ -63,23 +70,37 @@ def relay() -> FakeRelay:
 
 
 @pytest.fixture
+def stop() -> asyncio.Event:
+    return asyncio.Event()
+
+
+type Start = Callable[..., asyncio.Task[None]]
+
+
+@pytest.fixture
 async def start(
-    consumer: FakeConsumer, relay: FakeRelay
-) -> AsyncIterator[Callable[..., None]]:
+    consumer: FakeConsumer, relay: FakeRelay, stop: asyncio.Event
+) -> AsyncIterator[Start]:
     """Start a worker with the given timings; cancel it after the test."""
     tasks: list[asyncio.Task[None]] = []
 
     def start_worker(
-        relay_idle: float = 10, prune_interval: float = 10, error_pause: float = 0
-    ) -> None:
+        relay_idle: float = 10,
+        prune_interval: float = 10,
+        error_pause: float = 0,
+        flush: float = 1,
+    ) -> asyncio.Task[None]:
         worker = Worker(
             consumer,
             relay,
             WorkerSettings(prune_interval_seconds=prune_interval),
             relay_idle_seconds=relay_idle,
             error_pause_seconds=error_pause,
+            flush_seconds=flush,
         )
-        tasks.append(asyncio.create_task(worker.run()))
+        task = asyncio.create_task(worker.run(stop))
+        tasks.append(task)
+        return task
 
     yield start_worker
     for task in tasks:
@@ -88,7 +109,7 @@ async def start(
 
 
 async def test_runs_the_consumer_relay_and_prune_together(
-    consumer: FakeConsumer, relay: FakeRelay, start: Callable[..., None]
+    consumer: FakeConsumer, relay: FakeRelay, start: Start
 ) -> None:
     start()
     await until(
@@ -97,7 +118,7 @@ async def test_runs_the_consumer_relay_and_prune_together(
 
 
 async def test_relay_goes_again_at_once_while_there_is_work(
-    relay: FakeRelay, start: Callable[..., None]
+    relay: FakeRelay, start: Start
 ) -> None:
     relay.passes = [100, 100, 7, 0, 5]
     start(relay_idle=10)
@@ -107,7 +128,7 @@ async def test_relay_goes_again_at_once_while_there_is_work(
 
 
 async def test_a_failed_relay_pass_is_logged_and_the_loop_goes_on(
-    relay: FakeRelay, start: Callable[..., None], log_lines: LogLines
+    relay: FakeRelay, start: Start, log_lines: LogLines
 ) -> None:
     relay.passes = [ConnectionError("database down"), 3, 0]
     start()
@@ -119,14 +140,14 @@ async def test_a_failed_relay_pass_is_logged_and_the_loop_goes_on(
 
 
 async def test_prune_runs_at_start_up_and_then_every_interval(
-    relay: FakeRelay, start: Callable[..., None]
+    relay: FakeRelay, start: Start
 ) -> None:
     start(prune_interval=0.01)
     await until(lambda: relay.prune_calls >= 3)
 
 
 async def test_a_failed_prune_waits_for_the_next_interval(
-    relay: FakeRelay, start: Callable[..., None], log_lines: LogLines
+    relay: FakeRelay, start: Start, log_lines: LogLines
 ) -> None:
     relay.prunes = [ConnectionError("database down")]
     start(prune_interval=10)
@@ -137,7 +158,7 @@ async def test_a_failed_prune_waits_for_the_next_interval(
 
 
 async def test_failing_loops_do_not_stop_the_others(
-    consumer: FakeConsumer, relay: FakeRelay, start: Callable[..., None]
+    consumer: FakeConsumer, relay: FakeRelay, start: Start
 ) -> None:
     relay.passes = [RuntimeError("bug")] * 5
     relay.prunes = [RuntimeError("bug")] * 5
@@ -145,3 +166,56 @@ async def test_failing_loops_do_not_stop_the_others(
     await until(lambda: relay.relay_calls >= 5 and relay.prune_calls >= 5)
     assert consumer.running
     await until(lambda: relay.relay_calls >= 6)  # still going after the failures
+
+
+async def test_relay_keeps_sending_while_the_consumer_drains(
+    consumer: FakeConsumer, relay: FakeRelay, start: Start, stop: asyncio.Event
+) -> None:
+    start(relay_idle=0.001)
+    await until(lambda: relay.relay_calls > 0)
+    stop.set()
+    calls = relay.relay_calls
+    await until(lambda: relay.relay_calls > calls + 3)  # follow-ups of draining jobs
+    consumer.drained.set()
+
+
+async def test_after_draining_the_relay_flushes_until_empty_then_run_returns(
+    consumer: FakeConsumer, relay: FakeRelay, start: Start, stop: asyncio.Event
+) -> None:
+    relay.passes = [0, 4, 4, 0, 9]
+    worker = start(relay_idle=10, prune_interval=10)
+    await until(lambda: relay.relay_calls == 1)
+    stop.set()
+    consumer.drained.set()
+    await asyncio.wait_for(worker, timeout=1)  # prune's 10 s wait was cancelled
+    assert relay.relay_calls == 4  # 4, 4, then the empty pass; never the 9
+
+
+async def test_a_failure_during_the_flush_ends_it(
+    consumer: FakeConsumer, relay: FakeRelay, start: Start, stop: asyncio.Event
+) -> None:
+    relay.passes = [0, RuntimeError("database down"), 5]
+    worker = start(error_pause=10)
+    await until(lambda: relay.relay_calls == 1)
+    stop.set()
+    consumer.drained.set()
+    await asyncio.wait_for(worker, timeout=1)
+    assert relay.relay_calls == 2
+
+
+async def test_a_flush_that_hangs_is_cut_off_at_its_deadline(
+    consumer: FakeConsumer,
+    relay: FakeRelay,
+    start: Start,
+    stop: asyncio.Event,
+    log_lines: LogLines,
+) -> None:
+    worker = start(flush=0.05)
+    await until(lambda: relay.relay_calls == 1)
+    relay.hang = True  # a database call that never returns
+    stop.set()
+    consumer.drained.set()
+    await asyncio.wait_for(worker, timeout=1)
+    assert "outbox flush cut off at the deadline" in [
+        line["event"] for line in log_lines()
+    ]

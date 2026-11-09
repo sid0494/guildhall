@@ -59,6 +59,23 @@ uv run alembic downgrade -1                            # undo the latest migrati
 Never edit or delete a migration that has been applied anywhere; write a new
 one instead.
 
+## Running the worker
+
+With the services up, the queues created and the migrations applied:
+
+```sh
+uv run guildhall-worker
+```
+
+It logs one line per event: readable on a terminal, JSON when the output is
+piped or `GUILDHALL_LOG_FORMAT=json` is set. Ctrl+C (or SIGTERM) stops it
+gracefully: it starts no new receive, lets running jobs finish (up to
+`GUILDHALL_SHUTDOWN_DRAIN_SECONDS`), sends any follow-up jobs still in the
+outbox, and exits. An idle worker first waits for its open receive to end,
+which takes up to `GUILDHALL_RECEIVE_WAIT_SECONDS` (20). Press Ctrl+C a second
+time to stop at once; running jobs are then redelivered after the visibility
+timeout.
+
 ## Checks
 
 ```sh
