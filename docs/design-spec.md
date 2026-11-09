@@ -34,11 +34,10 @@ One container image runs as two Deployments: `api` handles Discord's signed requ
 ```mermaid
 flowchart TB
     discord["Discord<br/>my server"]
-    scheduler["EventBridge Scheduler<br/>every 15 min"]
 
     subgraph cluster["Kubernetes cluster (kind locally, EKS on AWS)"]
         api["api<br/>verifies signature, replies in 3 s"]
-        subgraph worker["Guildhall worker pods (platform)<br/>dedupe · retries · rate limits · outbox"]
+        subgraph worker["Guildhall worker pods (platform)<br/>schedules · dedupe · retries · rate limits · outbox"]
             gank["Gank Report<br/>Dota 2 match metrics"]
             quest["Side Quest<br/>library, price alerts"]
         end
@@ -57,7 +56,6 @@ flowchart TB
 
     discord -- "slash commands (signed HTTPS)" --> api
     api -- "slow commands" --> sqs
-    scheduler -- "discover jobs" --> sqs
     sqs -- "jobs" --> worker
     worker -- "reports, alerts (outbox)" --> discord
     api --> pg
@@ -91,7 +89,7 @@ guildhall/
   tests/                unit, contract and fixture tests; mock upstream server
   k8s/base/             Deployments, Services, Ingress, probes
   k8s/overlays/         local (kind) and aws (EKS)
-  infra/                Terraform: VPC, EKS, ECR, RDS, SQS, S3, Scheduler
+  infra/                Terraform: VPC, EKS, ECR, RDS, SQS, S3
   docs/adr/             decision records
   .github/workflows/
   Makefile              up, down, test, drill
@@ -119,7 +117,8 @@ class SourcePlugin(ABC):
         """Every kind of job, e.g. JobType("fetch_match", FetchMatch, self.fetch_match)."""
 
     def schedules(self) -> list[Schedule]:
-        """Recurring triggers, e.g. Schedule(job_type="poll_matches", cron="*/15 * * * *")."""
+        """Recurring triggers, e.g. Schedule(job_type="poll_matches", cron="*/15 * * * *").
+        A scheduled job type takes ScheduledRun(scheduled_for, account) as its payload."""
         return []
 
 
@@ -138,6 +137,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - `Outcome(retry_in=...)` is an expected wait, such as a match that isn't parsed yet. The job runs again with `attempt + 1` and it doesn't count as a failure; it emits nothing until it finishes.
 - A plug-in's writes are SQLAlchemy statements in `Outcome.writes`; the platform runs them in the job's transaction, after its dedupe claim and with its outbox rows, so all of it commits or none does ([ADR 0028](adr/0028-plugin-writes-declared-in-the-outcome.md)). Reads go through `ctx.db.fetch`, one read-only transaction per call ([ADR 0030](adr/0030-plugin-reads-through-a-checked-fetch.md)). Tables are declared on the plug-in and migrated in the one Alembic history ([ADR 0029](adr/0029-plugin-tables-and-migrations.md)).
 - Raw upstream responses are kept by returning `Archive(kind, id, body)` in `Outcome.archives`; the platform uploads them to S3 before the job commits, so a committed job's archives always exist, and `ctx.archive.get` reads them back ([ADR 0031](adr/0031-raw-archive-declared-in-the-outcome.md), [ADR 0032](adr/0032-archive-keys-bucket-and-aws-settings.md)).
+- Schedules fire from every worker: the first to claim a tick in Postgres queues its jobs through the outbox, so each tick fires once. Ticks missed while no worker ran coalesce into one run; a new schedule first fires at its next tick. A `per_account` schedule creates one job per linked account, keyed by the link's row ID, never the account's external ID ([ADR 0036](adr/0036-scheduling-in-workers-with-a-postgres-claim.md), [ADR 0037](adr/0037-missed-ticks-fire-once.md), [ADR 0038](adr/0038-scheduled-runs-and-linked-accounts.md)).
 - Upstream calls go through `ctx.http.get` and `.post`, which return the contract's own `HttpResponse`. Each call takes from the plug-in's shared budget; a short wait happens in place, while a longer one, a `429` or an unreachable limiter defers the whole job without counting it as an attempt. `5xx`, timeouts and connection failures raise `RetryableError`; every other status is the plug-in's to judge. Handlers must not catch broad exceptions around `ctx.http` ([ADR 0033](adr/0033-throttled-jobs-are-deferred.md), [ADR 0035](adr/0035-plugin-http-contract.md)).
 - Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
 
@@ -281,7 +281,8 @@ Platform tables are shared; each plug-in owns tables prefixed with its name. Raw
 
 | Table | Owner | Key columns | Purpose |
 | --- | --- | --- | --- |
-| `linked_accounts` | Platform | `discord_user_id`, `plugin`, `external_id` | Who I am in each source |
+| `linked_accounts` | Platform | `id`, `plugin`, `discord_user_id` (unique per plug-in), `external_id`, `linked_at` | Who I am in each source; `per_account` schedules fan out over it |
+| `schedule_runs` | Platform | `plugin`, `job_type` (primary key), `fired_for` | The tick each schedule last fired for, claimed with a compare-and-set ([ADR 0036](adr/0036-scheduling-in-workers-with-a-postgres-claim.md)) |
 | `processed_jobs` | Platform | `dedupe_key` (primary key), `completed_at` | A job key takes effect once |
 | `outbox_events` | Platform | `id`, `plugin`, `dedupe_key` (unique), `type`, `schema_version`, `payload`; from M2 also `status`, `attempts`, `discord_message_id` | Events waiting for Discord delivery |
 | `outbox_jobs` | Platform | `id`, `dedupe_key`, `body` (job envelope), `delay_seconds`, `sent_at` | Follow-up jobs waiting for the relay to send them to SQS ([ADR 0017](adr/0017-queue-client-and-outbox-tables.md)) |
@@ -304,6 +305,7 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 | --- | --- |
 | A job takes effect once, even if delivered twice | SQS is at-least-once; the worker records the job's `dedupe_key` in `processed_jobs` in the same transaction as the plug-in's declared writes and the outbox rows ([ADR 0028](adr/0028-plugin-writes-declared-in-the-outcome.md)) |
 | A committed job's raw responses are archived | The runner uploads the outcome's archives to S3 before it commits; a failed or slow upload commits nothing and the job is retried ([ADR 0031](adr/0031-raw-archive-declared-in-the-outcome.md)) |
+| A schedule tick fires once, however many workers run | Each worker claims due ticks with a compare-and-set on `schedule_runs` and queues the tick's jobs in the same transaction; missed ticks coalesce into one run ([ADR 0036](adr/0036-scheduling-in-workers-with-a-postgres-claim.md), [ADR 0037](adr/0037-missed-ticks-fire-once.md)) |
 | A crashed worker loses no work | SQS visibility timeout redelivers unacknowledged messages; jobs must be safe to re-run |
 | Stopping a worker wastes no work | On SIGTERM a worker starts no new receive, lets the one in progress finish and hands back what it returns, drains running jobs up to a deadline above the job timeout, then flushes the outbox; the grace period (compose, Kubernetes) is set above drain plus flush ([ADR 0023](adr/0023-graceful-shutdown.md)) |
 | A received job starts at once | Each worker runs up to `GUILDHALL_WORKER_CONCURRENCY` jobs and receives only as many messages as it has free slots, so no message waits locally while its visibility timeout runs ([ADR 0021](adr/0021-worker-concurrency.md)) |
@@ -344,7 +346,6 @@ Locally, Docker Engine runs the services from `compose.yaml`: Postgres 18, Redis
 - VPC with one NAT gateway, EKS with two small nodes, ECR repository
 - RDS Postgres, smallest instance, no Multi-AZ
 - SQS job queue plus dead-letter queue; S3 bucket for raw payloads
-- EventBridge Scheduler for the recurring `discover` triggers
 - IAM: pods get SQS and S3 access through EKS Pod Identity, no access keys in pods
 - Terraform state in S3; an AWS Budgets alert
 
@@ -364,7 +365,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 ### Cost guardrails
 
 - EKS bills hourly even when idle (control plane $0.10 per cluster-hour on standard support; $0.60 once the Kubernetes version leaves standard support). Create and destroy per session with `make up` / `make down`, and pin a current version.
-- Nodes, NAT gateway, load balancer and RDS also bill hourly; SQS, Scheduler and S3 are pay-per-use and negligible here.
+- Nodes, NAT gateway, load balancer and RDS also bill hourly; SQS and S3 are pay-per-use and negligible here.
 - Destroy order: delete the Ingress first so the load balancer goes, then `terraform destroy`, then check the console. Keep the S3 bucket and domain.
 - After an AWS session, point Discord's interactions URL back at the tunnel.
 

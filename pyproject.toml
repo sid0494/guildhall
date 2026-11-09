@@ -7,6 +7,7 @@ dependencies = [
     "aiobotocore>=3.10.0",
     "alembic>=1.20.1",
     "botocore>=1.43.117",
+    "cronsim>=2.8",
     "httpx>=0.28.1",
     "limits>=5.8.0",
     "psycopg[binary]>=3.3.8",

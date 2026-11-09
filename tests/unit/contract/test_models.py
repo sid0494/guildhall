@@ -1,6 +1,6 @@
 """Unit tests for the contract's value types."""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import pytest
@@ -13,9 +13,11 @@ from guildhall.contract import (
     Event,
     Job,
     JobSpec,
+    LinkedAccount,
     Outcome,
     RateLimitPolicy,
     Schedule,
+    ScheduledRun,
     plugin_metadata,
 )
 
@@ -181,3 +183,17 @@ def test_empty_outcome_is_a_finished_job_with_no_output() -> None:
         (),
         None,
     )
+
+
+def test_a_scheduled_run_survives_the_queue_in_utc() -> None:
+    run = ScheduledRun(
+        scheduled_for=datetime(2026, 11, 8, 18, 0, tzinfo=UTC),
+        account=LinkedAccount(discord_user_id="user-1", external_id="account-1"),
+    )
+    back = ScheduledRun.model_validate_json(run.model_dump_json())
+    assert back == run
+    assert back.scheduled_for.utcoffset() == timedelta(0)
+
+
+def test_a_scheduled_run_without_an_account_is_for_the_whole_plugin() -> None:
+    assert ScheduledRun(scheduled_for=datetime(2026, 11, 8, tzinfo=UTC)).account is None

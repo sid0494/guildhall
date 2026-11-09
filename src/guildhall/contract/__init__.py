@@ -12,9 +12,11 @@ from guildhall.contract.models import (
     Event,
     Job,
     JobSpec,
+    LinkedAccount,
     Outcome,
     RateLimitPolicy,
     Schedule,
+    ScheduledRun,
 )
 from guildhall.contract.plugin import Context, Handler, JobType, SourcePlugin
 from guildhall.contract.storage import Database, plugin_metadata
@@ -31,12 +33,14 @@ __all__ = [
     "Job",
     "JobSpec",
     "JobType",
+    "LinkedAccount",
     "Outcome",
     "PermanentError",
     "RateLimitPolicy",
     "RawArchive",
     "RetryableError",
     "Schedule",
+    "ScheduledRun",
     "SourcePlugin",
     "plugin_metadata",
 ]

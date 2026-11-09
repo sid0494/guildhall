@@ -7,16 +7,24 @@ function returns every problem found, so one run reports them all.
 """
 
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from cronsim import CronSim, CronSimError
 from sqlalchemy import Select
 from sqlalchemy.sql import visitors
 from sqlalchemy.sql.elements import ColumnClause, TextClause
 from sqlalchemy.sql.expression import UpdateBase
 from sqlalchemy.sql.selectable import TableClause
 
-from guildhall.contract import ContractModel, JobType, Outcome, SourcePlugin
+from guildhall.contract import (
+    ContractModel,
+    JobType,
+    Outcome,
+    Schedule,
+    ScheduledRun,
+    SourcePlugin,
+)
 from guildhall.contract.storage import NAMING_CONVENTION
 
 SUPPORTED_CONTRACT_VERSIONS = frozenset({1})
@@ -63,9 +71,15 @@ def check_declarations(plugin: SourcePlugin) -> list[str]:
                 " ContractModel"
             )
 
+    declared = job_types_by_name(plugin)
+    scheduled: set[str] = set()
     for schedule in plugin.schedules():
-        if schedule.job_type not in seen:
-            problems.append(f"schedule names undeclared job type {schedule.job_type!r}")
+        problems.extend(_check_schedule(schedule, declared.get(schedule.job_type)))
+        if schedule.job_type in scheduled:
+            problems.append(
+                f"job type {schedule.job_type!r} is scheduled more than once"
+            )
+        scheduled.add(schedule.job_type)
 
     tables = plugin.tables
     if dict(tables.naming_convention) != NAMING_CONVENTION:
@@ -75,6 +89,25 @@ def check_declarations(plugin: SourcePlugin) -> list[str]:
             problems.append(
                 f"table {table_name!r} must be named {plugin.name + '_'!r}..."
             )
+    return problems
+
+
+def _check_schedule(schedule: Schedule, job_type: JobType[Any] | None) -> list[str]:
+    problems: list[str] = []
+    if job_type is None:
+        problems.append(f"schedule names undeclared job type {schedule.job_type!r}")
+    elif job_type.payload_model is not ScheduledRun:
+        problems.append(
+            f"scheduled job type {schedule.job_type!r} must take ScheduledRun as its"
+            " payload"
+        )
+    try:
+        CronSim(schedule.cron, datetime.now(UTC))
+    except CronSimError:
+        problems.append(
+            f"schedule for {schedule.job_type!r} has an invalid cron expression"
+            f" {schedule.cron!r}"
+        )
     return problems
 
 

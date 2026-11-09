@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -53,6 +54,20 @@ class FakeRelay:
         return result
 
 
+@dataclass
+class FakeScheduler:
+    """Records when it was asked; an exception in `fails` is raised instead."""
+
+    calls: list[datetime] = field(default_factory=list)
+    fails: list[Exception] = field(default_factory=list)
+
+    async def fire_due(self, now: datetime) -> int:
+        self.calls.append(now)
+        if self.fails:
+            raise self.fails.pop(0)
+        return 0
+
+
 async def until(condition: Callable[[], bool]) -> None:
     async with asyncio.timeout(1):
         while not condition():  # noqa: ASYNC110 - polls fakes' plain state
@@ -70,6 +85,11 @@ def relay() -> FakeRelay:
 
 
 @pytest.fixture
+def scheduler() -> FakeScheduler:
+    return FakeScheduler()
+
+
+@pytest.fixture
 def stop() -> asyncio.Event:
     return asyncio.Event()
 
@@ -79,7 +99,10 @@ type Start = Callable[..., asyncio.Task[None]]
 
 @pytest.fixture
 async def start(
-    consumer: FakeConsumer, relay: FakeRelay, stop: asyncio.Event
+    consumer: FakeConsumer,
+    relay: FakeRelay,
+    scheduler: FakeScheduler,
+    stop: asyncio.Event,
 ) -> AsyncIterator[Start]:
     """Start a worker with the given timings; cancel it after the test."""
     tasks: list[asyncio.Task[None]] = []
@@ -87,13 +110,18 @@ async def start(
     def start_worker(
         relay_idle: float = 10,
         prune_interval: float = 10,
+        schedule_interval: float = 10,
         error_pause: float = 0,
         flush: float = 1,
     ) -> asyncio.Task[None]:
         worker = Worker(
             consumer,
             relay,
-            WorkerSettings(prune_interval_seconds=prune_interval),
+            scheduler,
+            WorkerSettings(
+                prune_interval_seconds=prune_interval,
+                schedule_interval_seconds=schedule_interval,
+            ),
             relay_idle_seconds=relay_idle,
             error_pause_seconds=error_pause,
             flush_seconds=flush,
@@ -219,3 +247,34 @@ async def test_a_flush_that_hangs_is_cut_off_at_its_deadline(
     assert "outbox flush cut off at the deadline" in [
         line["event"] for line in log_lines()
     ]
+
+
+async def test_schedules_are_checked_at_start_up_and_then_every_interval(
+    scheduler: FakeScheduler, start: Start
+) -> None:
+    start(schedule_interval=0.01)
+    await until(lambda: len(scheduler.calls) >= 3)
+    assert all(call.tzinfo is UTC for call in scheduler.calls)
+    assert scheduler.calls == sorted(scheduler.calls)
+
+
+async def test_a_failed_schedule_pass_is_logged_and_the_next_one_runs(
+    scheduler: FakeScheduler, start: Start, log_lines: LogLines
+) -> None:
+    scheduler.fails = [ConnectionError("database down")]
+    start(schedule_interval=0.01)
+    await until(lambda: len(scheduler.calls) >= 2)
+    failed = [line for line in log_lines() if line["event"] == "schedule pass failed"]
+    assert len(failed) == 1
+    assert "database down" in failed[0]["exception"]
+
+
+async def test_stopping_cancels_the_scheduler_without_waiting_for_it(
+    consumer: FakeConsumer, scheduler: FakeScheduler, start: Start, stop: asyncio.Event
+) -> None:
+    worker = start(schedule_interval=10)
+    await until(lambda: len(scheduler.calls) == 1)
+    stop.set()
+    consumer.drained.set()
+    await asyncio.wait_for(worker, timeout=1)  # its 10 s wait was cancelled
+    assert len(scheduler.calls) == 1

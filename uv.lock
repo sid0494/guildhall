@@ -277,6 +277,14 @@ wheels = [
 ]
 
 [[package]]
+name = "cronsim"
+version = "2.8"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/44/8f64773169b6621b435f6045457250d51f775e495fa81766f7657a12539e/cronsim-2.8-py3-none-any.whl", hash = "sha256:62115cabaa121953ac4bbf2e66808b5229ca6e47372a74e752b42fcdf28324a5", size = 14526, upload-time = "2026-11-05T05:29:29.493Z" },
+]
+
+[[package]]
 name = "deprecated"
 version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -405,6 +413,7 @@ dependencies = [
     { name = "aiobotocore" },
     { name = "alembic" },
     { name = "botocore" },
+    { name = "cronsim" },
     { name = "httpx" },
     { name = "limits" },
     { name = "psycopg", extra = ["binary"] },
@@ -431,6 +440,7 @@ requires-dist = [
     { name = "aiobotocore", specifier = ">=3.10.0" },
     { name = "alembic", specifier = ">=1.20.1" },
     { name = "botocore", specifier = ">=1.43.117" },
+    { name = "cronsim", specifier = ">=2.8" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "limits", specifier = ">=5.8.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.8" },

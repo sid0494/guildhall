@@ -4,7 +4,7 @@ All values are immutable pydantic models that ignore unknown fields, so a newer
 producer can add fields without breaking an older consumer.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Self
 
 from pydantic import (
@@ -51,12 +51,35 @@ class Schedule(ContractModel):
 
     `cron` is a five-field cron expression evaluated in UTC, for example
     "*/15 * * * *" or "0 18 * * SUN". With `per_account`, the platform creates
-    one job per linked account; otherwise one job for the plug-in.
+    one job per linked account; otherwise one job for the plug-in. The job
+    type's payload model must be `ScheduledRun`, which the platform fills in.
+    A tick missed while no worker ran fires once when one returns
+    (docs/adr/0036, docs/adr/0037).
     """
 
     job_type: NonEmptyStr
     cron: NonEmptyStr
     per_account: bool = True
+
+
+class LinkedAccount(ContractModel):
+    """Someone's account in the plug-in's source, linked with `/link`."""
+
+    discord_user_id: NonEmptyStr
+    external_id: NonEmptyStr
+    """The account in the source, e.g. a Dota account ID."""
+
+
+class ScheduledRun(ContractModel):
+    """The payload of every scheduled job (docs/adr/0038).
+
+    `scheduled_for` is the tick, not when the job runs: a late weekly report
+    still knows which week it covers. `account` is set for `per_account`
+    schedules.
+    """
+
+    scheduled_for: datetime
+    account: LinkedAccount | None = None
 
 
 class JobSpec(ContractModel):
