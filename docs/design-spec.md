@@ -81,7 +81,7 @@ guildhall/
   src/guildhall/
     bootstrap.py          composition root: wires the plug-in catalogue into the platform
     contract/             the plug-in contract: interface, job and event types, errors
-    platform/             worker loop, dedupe, rate limiter, outbox, plug-in registry
+    platform/             worker loop, dedupe, rate limiter, outbox, plug-in registry, logging
     plugins/gank_report/  discover, fetch_match, metrics, commands, render
     plugins/side_quest/   library and wishlist sync, prices, alerts, commands
     plugins/synthetic/    payload-driven plug-in for end-to-end tests, drills and load checks
@@ -307,7 +307,7 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 
 ### Observability
 
-- Structured JSON logs with `plugin`, `job_type`, `dedupe_key` and `attempt` on every line.
+- Structured JSON logs with `plugin`, `job_type`, `dedupe_key` and `attempt` on every line written while a job runs, plug-in and library lines included. structlog and standard `logging` share one processor chain; the job fields travel in context variables, so concurrent jobs never mix them up ([ADR 0020](adr/0020-structured-logging.md)).
 - Metrics: jobs processed, failed and dead-lettered per plug-in; queue depth; upstream calls and `429`s per plug-in; outbox lag.
 - `/guildhall status` in Discord surfaces the important ones without opening a dashboard.
 

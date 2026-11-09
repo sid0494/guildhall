@@ -5,7 +5,7 @@ told it to do.
 """
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -31,6 +31,8 @@ from guildhall.platform.outbox import outbox_events, outbox_jobs
 from guildhall.platform.queue import ReceivedMessage
 from guildhall.platform.runner import JobRunner, RunnerSettings, RunResult, Status
 from guildhall.plugins.synthetic import SyntheticPlugin
+
+type LogLines = Callable[[], list[dict[str, Any]]]
 
 
 @dataclass
@@ -279,3 +281,49 @@ async def test_database_outage_is_retried(queue: FakeQueue, run_id: str) -> None
     assert result.status is Status.RETRYING
     assert result.reason == "database error: OperationalError"
     assert queue.deleted == []
+
+
+def runner_lines(log_lines: LogLines) -> list[dict[str, Any]]:
+    return [
+        line for line in log_lines() if line["logger"] == "guildhall.platform.runner"
+    ]
+
+
+async def test_settled_job_is_logged_once_with_its_job_fields(
+    runner: JobRunner, run_id: str, log_lines: LogLines
+) -> None:
+    await runner.run(message(synthetic(run_id), receive_count=2))
+    (line,) = runner_lines(log_lines)
+    assert (
+        line.items()
+        >= {
+            "event": "job settled",
+            "level": "info",
+            "status": "done",
+            "plugin": "synthetic",
+            "job_type": "work",
+            "dedupe_key": f"synthetic:work:{run_id}",
+            "attempt": 2,
+        }.items()
+    )
+
+
+async def test_handler_failure_is_logged_with_its_traceback(
+    runner: JobRunner, run_id: str, log_lines: LogLines
+) -> None:
+    await runner.run(message(synthetic(run_id, fail="crash")))
+    raised, settled = runner_lines(log_lines)
+    assert raised["event"] == "handler raised"
+    assert "RuntimeError" in raised["exception"]
+    assert raised["dedupe_key"] == f"synthetic:work:{run_id}"
+    assert (settled["level"], settled["status"]) == ("warning", "retrying")
+
+
+async def test_unreadable_message_is_logged_as_an_error_without_job_fields(
+    runner: JobRunner, log_lines: LogLines
+) -> None:
+    await runner.run(message("not json"))
+    (line,) = runner_lines(log_lines)
+    assert (line["level"], line["status"]) == ("error", "dead_lettered")
+    assert line["reason"].startswith("invalid envelope: ")
+    assert "dedupe_key" not in line

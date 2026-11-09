@@ -6,12 +6,14 @@ propagate to the caller, since the message cannot be settled safely.
 """
 
 import asyncio
+import logging
 import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
+import structlog
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
@@ -28,10 +30,12 @@ from guildhall.contract import (
 from guildhall.platform.checks import check_outcome, job_types_by_name
 from guildhall.platform.dedupe import claim, processed_jobs
 from guildhall.platform.envelope import JobEnvelope
+from guildhall.platform.logs import bind_job
 from guildhall.platform.outbox import add_events, add_jobs
 from guildhall.platform.queue import ReceivedMessage
 
 _RANDOM = random.SystemRandom()
+_log = structlog.get_logger(__name__)
 
 
 class MessageQueue(Protocol):
@@ -74,6 +78,24 @@ class RunResult:
     reason: str | None = None
 
 
+_LEVELS = {
+    Status.DONE: logging.INFO,
+    Status.DUPLICATE: logging.INFO,
+    Status.NOT_READY: logging.INFO,
+    Status.RETRYING: logging.WARNING,
+    Status.DEAD_LETTERED: logging.ERROR,
+}
+
+
+def _log_result(result: RunResult) -> None:
+    _log.log(
+        _LEVELS[result.status],
+        "job settled",
+        status=result.status,
+        reason=result.reason,
+    )
+
+
 def backoff_seconds(receive_count: int, base: float, cap: float) -> int:
     """Exponential backoff with equal jitter: half fixed, half random."""
     exponential = min(cap, base * 2.0 ** (receive_count - 1))
@@ -102,13 +124,25 @@ class JobRunner:
         self._settings = settings
 
     async def run(self, message: ReceivedMessage) -> RunResult:
+        """Settle the message and log one line saying how."""
         try:
             envelope = JobEnvelope.model_validate_json(message.body)
         except ValidationError as error:
-            return await self._dead_letter(
+            result = await self._dead_letter(
                 message, f"invalid envelope: {describe(error)}"
             )
+            _log_result(result)
+            return result
 
+        attempt = envelope.attempt + message.receive_count - 1
+        with bind_job(envelope.plugin, envelope.type, envelope.dedupe_key, attempt):
+            result = await self._run(message, envelope, attempt)
+            _log_result(result)
+            return result
+
+    async def _run(
+        self, message: ReceivedMessage, envelope: JobEnvelope, attempt: int
+    ) -> RunResult:
         plugin = self._plugins.get(envelope.plugin)
         if plugin is None:
             return await self._dead_letter(
@@ -134,7 +168,6 @@ class JobRunner:
                 message, f"invalid payload: {describe(error)}"
             )
 
-        attempt = envelope.attempt + message.receive_count - 1
         job = Job[Any](
             type=envelope.type,
             payload=payload,
@@ -151,6 +184,7 @@ class JobRunner:
                 message, f"timed out after {self._settings.job_timeout_seconds} s"
             )
         except Exception as error:  # RetryableError and unexpected failures alike
+            _log.warning("handler raised", exc_info=error)
             return await self._retry(message, f"{type(error).__name__}: {error}")
 
         problems = check_outcome(plugin, outcome)
