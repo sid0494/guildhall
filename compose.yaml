@@ -18,6 +18,8 @@ x-guildhall: &guildhall
     - path: .env
       required: false # CI has no .env; it sets variables directly
   environment:
+    # The same password the postgres service gets, also when there is no .env.
+    GUILDHALL_POSTGRES_PASSWORD: ${GUILDHALL_POSTGRES_PASSWORD:?set GUILDHALL_POSTGRES_PASSWORD in .env}
     # Inside the compose network, services are reached by name, not 127.0.0.1.
     GUILDHALL_POSTGRES_HOST: postgres
     GUILDHALL_POSTGRES_PORT: "5432"

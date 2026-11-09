@@ -8,6 +8,11 @@ repos:
       - id: detect-private-key
       - id: check-added-large-files
       - id: check-yaml
+        exclude: ^compose(\..+)?\.yaml$
+      - id: check-yaml
+        name: check yaml (compose files; syntax only, for compose's !reset and !override)
+        files: ^compose(\..+)?\.yaml$
+        args: [--unsafe]
       - id: check-toml
       - id: end-of-file-fixer
       - id: trailing-whitespace
@@ -54,7 +59,7 @@ repos:
 
       - id: pytest
         name: pytest (unit and contract; integration runs in CI)
-        entry: uv run --locked pytest -m "not integration"
+        entry: uv run --locked pytest -m "not integration and not end_to_end"
         language: system
         types_or: [python, toml]
         pass_filenames: false

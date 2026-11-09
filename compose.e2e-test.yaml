@@ -1,0 +1,49 @@
+# The end-to-end test stack (docs/adr/0027): compose.yaml with the changes
+# below, run as its own compose project so it never touches the development
+# stack. `make test-e2e` starts it, runs the tests and removes it:
+#
+#   docker compose -p guildhall-e2e-test -f compose.yaml -f compose.e2e-test.yaml --profile app ...
+#
+# Later files override earlier ones; `!override` replaces a list instead of
+# appending to it, and `!reset` removes a setting.
+
+x-test-settings: &test-settings
+  # Ignore the developer's .env: the stack under test is the same everywhere.
+  env_file: !reset []
+
+services:
+  postgres:
+    # Other host ports than the development stack, so both can run at once.
+    ports: !override
+      - "127.0.0.1:15432:5432"
+    # Data in memory: every run starts from an empty database.
+    volumes: !reset []
+    tmpfs:
+      - /var/lib/postgresql
+
+  redis:
+    ports: !override
+      - "127.0.0.1:16379:6379"
+
+  moto:
+    ports: !override
+      - "127.0.0.1:15000:5000"
+
+  migrate:
+    <<: *test-settings
+
+  queues:
+    <<: *test-settings
+    environment:
+      # moto accepts any credentials; these reach only the emulator.
+      GUILDHALL_AWS_ACCESS_KEY_ID: moto-e2e-test
+      GUILDHALL_AWS_SECRET_ACCESS_KEY: moto-e2e-test
+
+  worker:
+    <<: *test-settings
+    environment:
+      GUILDHALL_PLUGINS: synthetic
+      GUILDHALL_AWS_ACCESS_KEY_ID: moto-e2e-test
+      GUILDHALL_AWS_SECRET_ACCESS_KEY: moto-e2e-test
+      # A shorter long poll, so stopping the stack after the tests is quicker.
+      GUILDHALL_RECEIVE_WAIT_SECONDS: "5"

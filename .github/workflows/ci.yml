@@ -68,9 +68,6 @@ jobs:
       - name: Start the compose services
         run: docker compose up -d --wait postgres moto
 
-      - name: Build the image
-        run: docker compose --profile app build
-
       - name: Install dependencies from the lockfile
         run: uv sync --locked
 
@@ -80,6 +77,33 @@ jobs:
       - name: Show service logs on failure
         if: failure()
         run: docker compose logs
+
+  end-to-end:
+    name: End-to-end tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+
+      - name: Generate a throwaway database password
+        run: |
+          password="$(openssl rand -hex 16)"
+          echo "::add-mask::${password}"
+          echo "GUILDHALL_POSTGRES_PASSWORD=${password}" >> "$GITHUB_ENV"
+
+      - name: Install dependencies from the lockfile
+        run: uv sync --locked
+
+      # Builds the image, starts the isolated test stack, runs the tests and
+      # removes the stack; prints the setup and worker logs on failure.
+      - name: Run end-to-end tests on a throwaway stack
+        run: make test-e2e
 
   secret-scan:
     name: Secret scan (full history)
