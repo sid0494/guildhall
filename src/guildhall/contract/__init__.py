@@ -14,10 +14,12 @@ from guildhall.contract.models import (
     Schedule,
 )
 from guildhall.contract.plugin import Context, Handler, JobType, SourcePlugin
+from guildhall.contract.storage import Database, plugin_metadata
 
 __all__ = [
     "Context",
     "ContractModel",
+    "Database",
     "Event",
     "Handler",
     "Job",
@@ -29,4 +31,5 @@ __all__ = [
     "RetryableError",
     "Schedule",
     "SourcePlugin",
+    "plugin_metadata",
 ]

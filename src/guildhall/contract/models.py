@@ -16,6 +16,7 @@ from pydantic import (
     SerializeAsAny,
     model_validator,
 )
+from sqlalchemy.sql.expression import UpdateBase
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 
@@ -100,17 +101,27 @@ class Event(ContractModel):
 class Outcome(ContractModel):
     """The result of running a job.
 
-    A finished job may emit events and follow-up jobs. A job that is not ready
-    yet (an expected wait, not a failure) sets `retry_in` instead and emits
-    nothing, so the platform runs it again later with `attempt + 1`.
+    A finished job may write its plug-in's tables, emit events and ask for
+    follow-up jobs; the platform commits all of them together with the job's
+    dedupe claim, or none (docs/adr/0028). `writes` are SQLAlchemy insert,
+    update or delete statements on the plug-in's own tables, run in order.
+
+    A job that is not ready yet (an expected wait, not a failure) sets
+    `retry_in` instead and does nothing else, so the platform runs it again
+    later with `attempt + 1`.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    writes: tuple[UpdateBase, ...] = ()
     events: tuple[SerializeAsAny[Event], ...] = ()
     jobs: tuple[JobSpec, ...] = ()
     retry_in: Annotated[timedelta, AfterValidator(_positive)] | None = None
 
     @model_validator(mode="after")
     def _retry_emits_nothing(self) -> Self:
-        if self.retry_in is not None and (self.events or self.jobs):
-            raise ValueError("an outcome that retries cannot emit events or jobs")
+        if self.retry_in is not None and (self.writes or self.events or self.jobs):
+            raise ValueError(
+                "an outcome that retries cannot write, emit events or ask for jobs"
+            )
         return self

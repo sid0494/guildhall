@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from sqlalchemy import Row, Select
 
 import guildhall.plugins
 from guildhall.contract import (
@@ -35,6 +36,13 @@ from guildhall.plugins import CATALOGUE
 from guildhall.plugins.synthetic import SyntheticPlugin, SyntheticWork
 
 
+class NoDatabase:
+    """`Context.db` for code that must not read: fails the test if it does."""
+
+    async def fetch(self, statement: Select[Any]) -> Sequence[Row[Any]]:
+        raise AssertionError("unexpected database read")
+
+
 @dataclass(frozen=True)
 class PluginCase:
     plugin: SourcePlugin
@@ -48,6 +56,7 @@ CASES = [
             "work": [
                 SyntheticWork(work_id="plain"),
                 SyntheticWork(work_id="busy", fan_out=3, emit_events=2),
+                SyntheticWork(work_id="kept", record=True),
                 SyntheticWork(work_id="waiting", not_ready_for=1),
                 SyntheticWork(work_id="flaky", fail="retryable"),
                 SyntheticWork(work_id="doomed", fail="permanent"),
@@ -76,7 +85,7 @@ def run_job(
         dedupe_key=f"{plugin.name}:contract-suite",
         attempt=1,
     )
-    return asyncio.run(job_type.handler(job, Context()))
+    return asyncio.run(job_type.handler(job, Context(db=NoDatabase())))
 
 
 def discovered_plugin_classes() -> set[type[SourcePlugin]]:

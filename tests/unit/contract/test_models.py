@@ -5,6 +5,7 @@ from typing import Literal
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import Column, Integer, Table, delete, insert, select
 
 from guildhall.contract import (
     ContractModel,
@@ -14,6 +15,11 @@ from guildhall.contract import (
     Outcome,
     RateLimitPolicy,
     Schedule,
+    plugin_metadata,
+)
+
+items = Table(
+    "sample_items", plugin_metadata(), Column("id", Integer, primary_key=True)
 )
 
 
@@ -119,8 +125,23 @@ def test_outcome_serialises_the_full_event() -> None:
 
 
 def test_outcome_that_retries_cannot_emit_events() -> None:
-    with pytest.raises(ValidationError, match="cannot emit events or jobs"):
+    with pytest.raises(ValidationError, match="cannot write, emit events or ask"):
         Outcome(retry_in=timedelta(minutes=3), events=(make_event(),))
+
+
+def test_outcome_that_retries_cannot_write() -> None:
+    with pytest.raises(ValidationError, match="cannot write, emit events or ask"):
+        Outcome(retry_in=timedelta(minutes=3), writes=(insert(items).values(id=1),))
+
+
+def test_outcome_keeps_its_writes_in_order() -> None:
+    first, second = insert(items).values(id=1), delete(items).where(items.c.id == 2)
+    assert Outcome(writes=(first, second)).writes == (first, second)
+
+
+def test_outcome_writes_cannot_be_selects() -> None:
+    with pytest.raises(ValidationError, match="UpdateBase"):
+        Outcome(writes=(select(items),))  # type: ignore[arg-type]
 
 
 def test_outcome_retry_delay_must_be_positive() -> None:
@@ -130,4 +151,9 @@ def test_outcome_retry_delay_must_be_positive() -> None:
 
 def test_empty_outcome_is_a_finished_job_with_no_output() -> None:
     outcome = Outcome()
-    assert (outcome.events, outcome.jobs, outcome.retry_in) == ((), (), None)
+    assert (outcome.writes, outcome.events, outcome.jobs, outcome.retry_in) == (
+        (),
+        (),
+        (),
+        None,
+    )

@@ -59,6 +59,12 @@ uv run alembic downgrade -1                            # undo the latest migrati
 Never edit or delete a migration that has been applied anywhere; write a new
 one instead.
 
+Plug-ins declare their tables on the plug-in (`tables`, from
+`plugin_metadata()`), and their migrations live in the same history: name the
+revision after the plug-in (`-m "gank_report create matches"`) and touch only
+its tables. An integration test fails if any declared table or column has no
+migration.
+
 ## Running the worker
 
 In containers, the `app` profile adds three services to the infrastructure:

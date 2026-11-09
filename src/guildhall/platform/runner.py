@@ -27,12 +27,17 @@ from guildhall.contract import (
     PermanentError,
     SourcePlugin,
 )
-from guildhall.platform.checks import check_outcome, job_types_by_name
+from guildhall.platform.checks import (
+    ContractViolationError,
+    check_outcome,
+    job_types_by_name,
+)
 from guildhall.platform.dedupe import claim, processed_jobs
 from guildhall.platform.envelope import JobEnvelope
 from guildhall.platform.logs import bind_job
 from guildhall.platform.outbox import add_events, add_jobs
 from guildhall.platform.queue import ReceivedMessage
+from guildhall.platform.storage import PluginDatabase
 
 _RANDOM = random.SystemRandom()
 _log = structlog.get_logger(__name__)
@@ -168,6 +173,7 @@ class JobRunner:
                 message, f"invalid payload: {describe(error)}"
             )
 
+        context = Context(db=PluginDatabase(self._engine, plugin))
         job = Job[Any](
             type=envelope.type,
             payload=payload,
@@ -176,9 +182,11 @@ class JobRunner:
         )
         try:
             async with asyncio.timeout(self._settings.job_timeout_seconds):
-                outcome = await job_type.handler(job, Context())
+                outcome = await job_type.handler(job, context)
         except PermanentError as error:
             return await self._dead_letter(message, f"permanent error: {error}")
+        except ContractViolationError as error:
+            return await self._dead_letter(message, f"contract violation: {error}")
         except TimeoutError:
             return await self._retry(
                 message, f"timed out after {self._settings.job_timeout_seconds} s"
@@ -221,7 +229,7 @@ class JobRunner:
     async def _commit(
         self, plugin: SourcePlugin, envelope: JobEnvelope, outcome: Outcome
     ) -> bool:
-        """Claim the key and write the outboxes in one transaction.
+        """Claim the key, run the plug-in's writes and fill the outboxes, atomically.
 
         Returns False, writing nothing, if another delivery already committed.
         """
@@ -230,6 +238,8 @@ class JobRunner:
             if not await claim(connection, envelope.dedupe_key):
                 await transaction.rollback()
                 return False
+            for write in outcome.writes:
+                await connection.execute(write)
             await add_events(connection, plugin.name, outcome.events)
             await add_jobs(connection, plugin.name, outcome.jobs)
             await transaction.commit()

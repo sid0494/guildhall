@@ -6,9 +6,14 @@ from sqlalchemy import URL, create_engine
 from guildhall.platform import dedupe, outbox
 from guildhall.platform.database import DatabaseSettings, metadata
 from guildhall.platform.logs import LogSettings, configure_logging
+from guildhall.plugins import CATALOGUE
 
 TABLE_MODULES = (dedupe, outbox)
 """Modules whose tables migrations manage; importing them registers the tables."""
+
+TARGET_METADATA = [metadata, *(plugin().tables for plugin in CATALOGUE.values())]
+"""The platform's tables and every catalogued plug-in's, enabled or not, so the
+schema never depends on configuration (docs/adr/0029)."""
 
 
 def database_url() -> URL:
@@ -21,7 +26,7 @@ def run_migrations_offline() -> None:
     """Print the migration SQL instead of running it (`alembic upgrade --sql`)."""
     context.configure(
         url=database_url().render_as_string(hide_password=True),
-        target_metadata=metadata,
+        target_metadata=TARGET_METADATA,
         literal_binds=True,
     )
     with context.begin_transaction():
@@ -32,7 +37,7 @@ def run_migrations_online() -> None:
     """Run migrations against the database in one transaction."""
     engine = create_engine(database_url())
     with engine.connect() as connection:
-        context.configure(connection=connection, target_metadata=metadata)
+        context.configure(connection=connection, target_metadata=TARGET_METADATA)
         with context.begin_transaction():
             context.run_migrations()
     engine.dispose()

@@ -112,6 +112,7 @@ class SourcePlugin(ABC):
     contract_version: ClassVar[int] = 1  # bumped only on breaking changes
     name: str  # "gank_report", "side_quest"
     rate_limit: RateLimitPolicy  # per-minute and per-day budget for the upstream API
+    tables: MetaData  # own tables, from plugin_metadata(); none by default
 
     @abstractmethod
     def job_types(self) -> list[JobType[Any]]:
@@ -125,13 +126,15 @@ class SourcePlugin(ABC):
 # Every handler has the same shape:
 async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
     """job.payload is already validated against FetchMatch.
-    Return Outcome(events=..., jobs=...) when done, or Outcome(retry_in=...) when
-    the work isn't ready yet. Raise RetryableError or PermanentError on failure."""
+    Read own tables with `await ctx.db.fetch(select(...))`. Return
+    Outcome(writes=..., events=..., jobs=...) when done, or Outcome(retry_in=...)
+    when the work isn't ready yet. Raise RetryableError or PermanentError on failure."""
 ```
 
 - `JobSpec` is work a handler asks for: type, payload, `dedupe_key` (e.g. `gank_report:match:8123456789`) and an optional delay. Any handler can return follow-up jobs, so polling is just a scheduled job type whose outcome is new jobs.
 - `Outcome(retry_in=...)` is an expected wait, such as a match that isn't parsed yet. The job runs again with `attempt + 1` and it doesn't count as a failure; it emits nothing until it finishes.
-- `Context` will carry the rate-limited HTTP client (`ctx.http`) and storage from M2. Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
+- A plug-in's writes are SQLAlchemy statements in `Outcome.writes`; the platform runs them in the job's transaction, after its dedupe claim and with its outbox rows, so all of it commits or none does ([ADR 0028](adr/0028-plugin-writes-declared-in-the-outcome.md)). Reads go through `ctx.db.fetch`, one read-only transaction per call ([ADR 0030](adr/0030-plugin-reads-through-a-checked-fetch.md)). Tables are declared on the plug-in and migrated in the one Alembic history ([ADR 0029](adr/0029-plugin-tables-and-migrations.md)).
+- `Context` gains the rate-limited HTTP client (`ctx.http`) and the raw archive later in M2. Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
 
 ### Rules
 
@@ -140,7 +143,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - Errors are typed. `RetryableError` goes back on the queue with exponential backoff and jitter; `PermanentError` goes to the dead-letter queue with its reason. A payload that fails validation is dead-lettered before plug-in code runs. Handlers run under a timeout ([ADR 0018](adr/0018-job-runner.md)).
 - Handlers share one event loop with the other jobs in their worker: they await I/O and move CPU-heavy work to `asyncio.to_thread`, or every job in the process stalls ([ADR 0021](adr/0021-worker-concurrency.md)).
 - Each plug-in has its own rate-limit bucket, so Side Quest checking prices can't eat Gank Report's OpenDota budget.
-- Each plug-in owns its tables and never reads another plug-in's.
+- Each plug-in owns its tables, named `<plug-in>_...`, and never reads or writes another's. Every statement it reads or writes with is checked: tables it doesn't declare and raw SQL text are refused and dead-lettered as contract violations.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
 - Available plug-ins are listed in one catalogue (`guildhall.plugins.CATALOGUE`); the enabled ones are named in `GUILDHALL_PLUGINS`. Disabling one is a config change, not a code change, and the platform refuses to start if a name is unknown ([ADR 0011](adr/0011-settings-and-plugin-catalogue.md)).
 - The platform checks every plug-in's declarations at startup and every outcome at runtime (`guildhall.platform.checks`), with the same functions the contract suite uses ([ADR 0010](adr/0010-contract-enforcement.md)).
@@ -278,6 +281,7 @@ Platform tables are shared; each plug-in owns tables prefixed with its name. Raw
 | `outbox_events` | Platform | `id`, `plugin`, `dedupe_key` (unique), `type`, `schema_version`, `payload`; from M2 also `status`, `attempts`, `discord_message_id` | Events waiting for Discord delivery |
 | `outbox_jobs` | Platform | `id`, `dedupe_key`, `body` (job envelope), `delay_seconds`, `sent_at` | Follow-up jobs waiting for the relay to send them to SQS ([ADR 0017](adr/0017-queue-client-and-outbox-tables.md)) |
 | `interactions_seen` | Platform | `interaction_id` (primary key), `received_at` | Discord retry dedupe |
+| `synthetic_records` | Synthetic | `work_id`, `attempt`, `recorded_at` | Written by synthetic jobs that ask to be recorded; exercises plug-in storage in tests and drills |
 | `gank_report_matches` | Gank Report | `match_id`, `hero_id`, `played_at`, `parsed`, `s3_key` | One row per match |
 | `gank_report_metrics` | Gank Report | `match_id`, `metric`, `value` | Long format, so new metrics need no migration |
 | `gank_report_focus` | Gank Report | `discord_user_id`, `metric` | Chosen skills |
@@ -293,7 +297,7 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 
 | Guarantee | Mechanism |
 | --- | --- |
-| A job takes effect once, even if delivered twice | SQS is at-least-once; the worker records the job's `dedupe_key` in `processed_jobs` in the same transaction as the job's writes |
+| A job takes effect once, even if delivered twice | SQS is at-least-once; the worker records the job's `dedupe_key` in `processed_jobs` in the same transaction as the plug-in's declared writes and the outbox rows ([ADR 0028](adr/0028-plugin-writes-declared-in-the-outcome.md)) |
 | A crashed worker loses no work | SQS visibility timeout redelivers unacknowledged messages; jobs must be safe to re-run |
 | Stopping a worker wastes no work | On SIGTERM a worker starts no new receive, lets the one in progress finish and hands back what it returns, drains running jobs up to a deadline above the job timeout, then flushes the outbox; the grace period (compose, Kubernetes) is set above drain plus flush ([ADR 0023](adr/0023-graceful-shutdown.md)) |
 | A received job starts at once | Each worker runs up to `GUILDHALL_WORKER_CONCURRENCY` jobs and receives only as many messages as it has free slots, so no message waits locally while its visibility timeout runs ([ADR 0021](adr/0021-worker-concurrency.md)) |

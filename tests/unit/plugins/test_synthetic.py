@@ -1,9 +1,13 @@
 """Unit tests for the synthetic plug-in's payload-driven behaviour."""
 
 import asyncio
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import Row, Select
+from sqlalchemy.sql.dml import Insert
 
 from guildhall.contract import (
     Context,
@@ -17,7 +21,15 @@ from guildhall.plugins.synthetic import (
     SyntheticPlugin,
     SyntheticWork,
     WorkDone,
+    records,
 )
+
+
+class NoDatabase:
+    """`Context.db` for code that must not read: fails the test if it does."""
+
+    async def fetch(self, statement: Select[Any]) -> Sequence[Row[Any]]:
+        raise AssertionError("unexpected database read")
 
 
 def run(work: SyntheticWork, attempt: int = 1) -> Outcome:
@@ -27,7 +39,7 @@ def run(work: SyntheticWork, attempt: int = 1) -> Outcome:
         dedupe_key=f"synthetic:work:{work.work_id}",
         attempt=attempt,
     )
-    return asyncio.run(SyntheticPlugin().work(job, Context()))
+    return asyncio.run(SyntheticPlugin().work(job, Context(db=NoDatabase())))
 
 
 def test_plain_work_finishes_with_no_output() -> None:
@@ -82,3 +94,14 @@ def test_fail_raises_the_requested_error(fail: str, error: type[Exception]) -> N
 def test_out_of_range_payloads_are_rejected(overrides: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         SyntheticWork.model_validate({"work_id": "a", **overrides})
+
+
+def test_record_writes_one_row_to_its_own_table() -> None:
+    (write,) = run(SyntheticWork(work_id="a", record=True), attempt=2).writes
+    assert isinstance(write, Insert)
+    assert write.table is records
+    assert write.compile().params == {"work_id": "a", "attempt": 2}
+
+
+def test_work_writes_nothing_unless_asked_to_record() -> None:
+    assert run(SyntheticWork(work_id="a", fan_out=1)).writes == ()

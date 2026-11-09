@@ -5,6 +5,21 @@ from typing import Any, Literal
 
 import pytest
 from pydantic import BaseModel
+from sqlalchemy import (
+    Column,
+    Integer,
+    MetaData,
+    Table,
+    column,
+    delete,
+    func,
+    insert,
+    literal_column,
+    select,
+    table,
+    text,
+    update,
+)
 
 from guildhall.contract import (
     Context,
@@ -17,8 +32,14 @@ from guildhall.contract import (
     RateLimitPolicy,
     Schedule,
     SourcePlugin,
+    plugin_metadata,
 )
-from guildhall.platform.checks import check_declarations, check_outcome
+from guildhall.platform.checks import (
+    check_declarations,
+    check_outcome,
+    check_read,
+    check_statement,
+)
 
 
 class Ping(ContractModel):
@@ -169,3 +190,117 @@ def test_retry_delay_must_fit_the_queue_limit() -> None:
 
 def test_delays_at_the_limit_are_allowed() -> None:
     assert check_outcome(Sample(), Outcome(retry_in=timedelta(minutes=15))) == []
+
+
+owned_metadata = plugin_metadata()
+items = Table("sample_items", owned_metadata, Column("id", Integer, primary_key=True))
+tags = Table("sample_tags", owned_metadata, Column("item_id", Integer))
+others = Table(
+    "other_things", plugin_metadata(), Column("id", Integer, primary_key=True)
+)
+
+
+class Storing(Sample):
+    tables = owned_metadata
+
+
+def test_tables_must_carry_the_plugin_name() -> None:
+    metadata = plugin_metadata()
+    Table("misnamed", metadata, Column("id", Integer, primary_key=True))
+
+    class Misnamed(Sample):
+        tables = metadata
+
+    assert check_declarations(Misnamed()) == [
+        "table 'misnamed' must be named 'sample_'..."
+    ]
+
+
+def test_tables_must_use_the_platform_naming_convention() -> None:
+    class Plain(Sample):
+        tables = MetaData()
+
+    assert check_declarations(Plain()) == [
+        "tables must be declared in a plugin_metadata()"
+    ]
+
+
+def test_declared_tables_are_valid() -> None:
+    assert check_declarations(Storing()) == []
+
+
+recent = select(items.c.id).order_by(items.c.id.desc()).limit(20).subquery()
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        select(items).join(tags, tags.c.item_id == items.c.id),
+        select(func.count()).where(tags.c.item_id.in_(select(recent.c.id))),
+        select(select(items.c.id).cte("c").c.id),
+        insert(items).values(id=1),
+        update(items).where(items.c.id == 1).values(id=2),
+        delete(tags).where(tags.c.item_id.in_(select(items.c.id))),
+    ],
+    ids=["join", "subquery", "cte", "insert", "update", "delete-with-subquery"],
+)
+def test_statements_on_owned_tables_are_allowed(statement: object) -> None:
+    assert check_statement(Storing(), statement) == []
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        select(others),
+        select(items).where(items.c.id.in_(select(others.c.id))),
+        select(others.alias("o")),
+        select(table("processed_jobs", column("dedupe_key"))),
+        delete(items).where(items.c.id.in_(select(others.c.id))),
+        insert(others).values(id=1),
+    ],
+    ids=["direct", "hidden-subquery", "alias", "lightweight", "in-a-write", "target"],
+)
+def test_statements_touching_other_tables_are_refused(statement: object) -> None:
+    problems = check_statement(Storing(), statement)
+    assert len(problems) == 1
+    assert "which 'sample' does not own" in problems[0]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        select(items).where(text("id in (select 1 from processed_jobs)")),
+        select(literal_column("(select count(*) from processed_jobs)")),
+        select(column("x")).select_from(text("processed_jobs")),
+        select(literal_column("* from processed_jobs --")),
+    ],
+    ids=["text-in-where", "literal-column", "text-as-from", "star-lookalike"],
+)
+def test_raw_sql_text_is_refused(statement: object) -> None:
+    assert check_statement(Storing(), statement) == [
+        "raw SQL text is not allowed; build the statement"
+    ]
+
+
+def test_strings_are_not_statements() -> None:
+    assert check_statement(Storing(), "select * from sample_items") == [
+        "expected a select, insert, update or delete, got str"
+    ]
+
+
+def test_reads_must_be_selects() -> None:
+    assert check_read(Storing(), insert(items).values(id=1)) == [
+        "reads must be select statements"
+    ]
+
+
+def test_writes_to_owned_tables_are_allowed() -> None:
+    outcome = Outcome(writes=(insert(items).values(id=1),))
+    assert check_outcome(Storing(), outcome) == []
+
+
+def test_writes_to_tables_the_plugin_does_not_own_are_reported() -> None:
+    outcome = Outcome(writes=(insert(others).values(id=1),))
+    assert check_outcome(Storing(), outcome) == [
+        "write touches table 'other_things', which 'sample' does not own"
+    ]

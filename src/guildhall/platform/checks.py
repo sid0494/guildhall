@@ -10,7 +10,14 @@ import re
 from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import Select
+from sqlalchemy.sql import visitors
+from sqlalchemy.sql.elements import ColumnClause, TextClause
+from sqlalchemy.sql.expression import UpdateBase
+from sqlalchemy.sql.selectable import TableClause
+
 from guildhall.contract import ContractModel, JobType, Outcome, SourcePlugin
+from guildhall.contract.storage import NAMING_CONVENTION
 
 SUPPORTED_CONTRACT_VERSIONS = frozenset({1})
 
@@ -18,6 +25,10 @@ MAX_QUEUE_DELAY = timedelta(minutes=15)
 """SQS rejects message delays longer than 15 minutes."""
 
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
+
+
+class ContractViolationError(Exception):
+    """A plug-in broke a contract rule while running; dead-lettered, never retried."""
 
 
 def job_types_by_name(plugin: SourcePlugin) -> dict[str, JobType[Any]]:
@@ -53,11 +64,60 @@ def check_declarations(plugin: SourcePlugin) -> list[str]:
     for schedule in plugin.schedules():
         if schedule.job_type not in seen:
             problems.append(f"schedule names undeclared job type {schedule.job_type!r}")
+
+    tables = plugin.tables
+    if dict(tables.naming_convention) != NAMING_CONVENTION:
+        problems.append("tables must be declared in a plugin_metadata()")
+    for table_name in tables.tables:
+        if not table_name.startswith(f"{plugin.name}_"):
+            problems.append(
+                f"table {table_name!r} must be named {plugin.name + '_'!r}..."
+            )
+    return problems
+
+
+def check_statement(plugin: SourcePlugin, statement: object) -> list[str]:
+    """Problems with a statement a plug-in reads or writes with.
+
+    Every table it touches, including in subqueries, must be one the plug-in
+    declares, and it may not contain raw SQL text, which cannot be inspected.
+    This catches mistakes in our own plug-ins; it is not a sandbox.
+    """
+    if not isinstance(statement, Select | UpdateBase):
+        return [
+            f"expected a select, insert, update or delete, got"
+            f" {type(statement).__name__}"
+        ]
+    owned = set(plugin.tables.tables.values())
+    problems: list[str] = []
+    foreign: set[str] = set()
+    for element in visitors.iterate(statement):
+        if isinstance(element, TableClause) and element not in owned:
+            foreign.add(element.name)
+        elif isinstance(element, TextClause) or (
+            # `func.count()` renders its `*` as a literal column; nothing else may
+            isinstance(element, ColumnClause)
+            and element.is_literal
+            and element.name != "*"
+        ):
+            problems.append("raw SQL text is not allowed; build the statement")
+    problems.extend(
+        f"touches table {name!r}, which {plugin.name!r} does not own"
+        for name in sorted(foreign)
+    )
+    return sorted(set(problems))
+
+
+def check_read(plugin: SourcePlugin, statement: object) -> list[str]:
+    """Problems with a statement a plug-in reads with: a select on its own tables."""
+    problems = check_statement(plugin, statement)
+    if isinstance(statement, UpdateBase):
+        problems.append("reads must be select statements")
     return problems
 
 
 def check_outcome(plugin: SourcePlugin, outcome: Outcome) -> list[str]:
-    """Problems with a handler's outcome: namespacing, follow-ups and delays."""
+    """Problems with a handler's outcome: writes, namespacing, follow-ups, delays."""
     problems: list[str] = []
     key_prefix = f"{plugin.name}:"
     type_prefix = f"{plugin.name}."
@@ -72,6 +132,11 @@ def check_outcome(plugin: SourcePlugin, outcome: Outcome) -> list[str]:
             problems.append(
                 f"event type {event.type!r} must start with {type_prefix!r}"
             )
+
+    for write in outcome.writes:
+        problems.extend(
+            f"write {problem}" for problem in check_statement(plugin, write)
+        )
 
     if outcome.retry_in is not None and outcome.retry_in > MAX_QUEUE_DELAY:
         problems.append(f"retry delay {outcome.retry_in} exceeds {MAX_QUEUE_DELAY}")
