@@ -318,6 +318,8 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 
 One container image, three run targets. Everyday use runs locally; AWS runs the same image for cloud sessions.
 
+The image is built in two stages: uv installs the locked runtime dependencies and the project into a virtual environment, and only that environment is copied onto `python:3.14-slim-trixie`. It runs as an unprivileged numeric user, and starts its command directly as PID 1 so SIGTERM reaches it ([ADR 0024](adr/0024-container-image.md)).
+
 | Environment | Compute | Queue and storage | Discord reaches it via |
 | --- | --- | --- | --- |
 | Dev | docker-compose | moto (SQS, S3), Postgres and Redis containers | Tunnel |
@@ -343,7 +345,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 
 ### CI/CD (GitHub Actions)
 
-- Every PR: the pre-commit hooks (lint, format, type check, unit tests, contract tests against the mock upstream), integration tests against the compose services, and a gitleaks scan of the full history; actions are pinned to commit SHAs ([ADR 0006](adr/0006-ci-workflow.md)).
+- Every PR: the pre-commit hooks (lint, format, type check, a check that production code imports only runtime dependencies ([ADR 0025](adr/0025-dependency-check-with-deptry.md)), unit tests, contract tests against the mock upstream), integration tests against the compose services, and a gitleaks scan of the full history; actions are pinned to commit SHAs ([ADR 0006](adr/0006-ci-workflow.md)).
 - Dependabot: security fix PRs as advisories appear, and monthly grouped version updates for Python packages and actions after a 7-day cooldown ([ADR 0007](adr/0007-dependabot.md)).
 - Merge to `main`: build the image, push to ECR tagged with the git SHA. AWS access through GitHub OIDC; no AWS keys stored in GitHub.
 - Deploy: manually triggered workflow that sets the image tag and applies the AWS overlay.
@@ -402,9 +404,9 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 
 ### M1: Platform skeleton
 
-- [ ] Plug-in contract, registry and contract test suite
+- [x] Plug-in contract, registry and contract test suite
 - [x] Worker loop with dedupe, typed errors and dead-letter handling
-- [ ] docker-compose with api, worker, Postgres, Redis, moto
+- [ ] Container image, and docker-compose with worker, Postgres, Redis, moto
 
 **Done when:** a fake plug-in's jobs flow end to end and a duplicate delivery is a no-op.
 
@@ -413,6 +415,7 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 - [ ] `discover`, `fetch_match`, parse-retry, S3 archive, metric registry
 - [ ] Per-plug-in rate limiter with backoff
 - [ ] Discord endpoint, `/link`, `/match last`, outbox dispatcher
+- [ ] api service in docker-compose
 
 **Done when:** I play a match and the report shows up in Discord on its own.
 
