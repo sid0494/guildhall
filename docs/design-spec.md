@@ -138,6 +138,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - Plug-ins never call Discord, SQS or each other, and import only `guildhall.contract`. They return jobs and events; the platform delivers them. A broken plug-in can't take down the bot.
 - Every job and event has a `dedupe_key`, namespaced by plug-in name. The platform guarantees each key takes effect once.
 - Errors are typed. `RetryableError` goes back on the queue with exponential backoff and jitter; `PermanentError` goes to the dead-letter queue with its reason. A payload that fails validation is dead-lettered before plug-in code runs. Handlers run under a timeout ([ADR 0018](adr/0018-job-runner.md)).
+- Handlers share one event loop with the other jobs in their worker: they await I/O and move CPU-heavy work to `asyncio.to_thread`, or every job in the process stalls ([ADR 0021](adr/0021-worker-concurrency.md)).
 - Each plug-in has its own rate-limit bucket, so Side Quest checking prices can't eat Gank Report's OpenDota budget.
 - Each plug-in owns its tables and never reads another plug-in's.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
@@ -294,6 +295,7 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 | --- | --- |
 | A job takes effect once, even if delivered twice | SQS is at-least-once; the worker records the job's `dedupe_key` in `processed_jobs` in the same transaction as the job's writes |
 | A crashed worker loses no work | SQS visibility timeout redelivers unacknowledged messages; jobs must be safe to re-run |
+| A received job starts at once | Each worker runs up to `GUILDHALL_WORKER_CONCURRENCY` jobs and receives only as many messages as it has free slots, so no message waits locally while its visibility timeout runs ([ADR 0021](adr/0021-worker-concurrency.md)) |
 | A follow-up job is never lost | Follow-up jobs go to `outbox_jobs` in the same transaction as the job's writes; a relay in each worker sends them to SQS, locking batches with `FOR UPDATE SKIP LOCKED` so replicas take different rows ([ADR 0016](adr/0016-worker-job-lifecycle.md), [ADR 0019](adr/0019-outbox-relay.md)) |
 | Bad jobs don't block good ones | After 5 receives, a message moves to the dead-letter queue; permanent failures, invalid payloads, contract violations and disabled plug-ins go there at once with a reason; redrive after a fix |
 | Upstream limits are respected across all replicas | One Redis token bucket per plug-in; `429` responses trigger exponential backoff with jitter |
