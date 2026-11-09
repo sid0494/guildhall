@@ -3,13 +3,9 @@
 import json
 from dataclasses import dataclass
 
-from guildhall.platform.dev_queues import ensure_queues
-from guildhall.platform.queue import (
-    DEAD_LETTER_REASON,
-    JobQueue,
-    QueueSettings,
-    open_sqs,
-)
+from guildhall.platform.aws import open_sqs
+from guildhall.platform.dev_aws import ensure_queues
+from guildhall.platform.queue import DEAD_LETTER_REASON, JobQueue, QueueSettings
 
 
 async def test_setup_is_idempotent_and_configures_redrive(

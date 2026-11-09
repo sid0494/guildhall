@@ -12,6 +12,7 @@ from collections.abc import Mapping
 import structlog
 
 from guildhall.contract import SourcePlugin
+from guildhall.platform.archive import ArchiveSettings, open_archive
 from guildhall.platform.consumer import ConsumerSettings, JobConsumer
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.logs import LogSettings, configure_logging
@@ -37,8 +38,11 @@ async def run_worker(stop: asyncio.Event) -> None:
     consumer_settings = ConsumerSettings()
     engine = create_engine(DatabaseSettings())
     try:
-        async with open_job_queue(QueueSettings()) as queue:
-            runner = JobRunner(plugins, engine, queue, RunnerSettings())
+        async with (
+            open_job_queue(QueueSettings()) as queue,
+            open_archive(ArchiveSettings()) as archive,
+        ):
+            runner = JobRunner(plugins, engine, queue, archive, RunnerSettings())
             worker = Worker(
                 JobConsumer(queue, runner, consumer_settings),
                 OutboxRelay(engine, queue, RelaySettings()),

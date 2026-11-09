@@ -27,6 +27,13 @@ class NoDatabase:
         raise AssertionError("unexpected database read")
 
 
+class NoArchive:
+    """`Context.archive` for code that must not read archives."""
+
+    async def get(self, kind: str, id: str) -> bytes | None:
+        raise AssertionError("unexpected archive read")
+
+
 class Ping(ContractModel):
     message: str
 
@@ -70,7 +77,9 @@ def test_job_type_handler_runs_with_a_typed_job() -> None:
     job = Job[Ping](
         type="ping", payload=Ping(message="hi"), dedupe_key="minimal:1", attempt=1
     )
-    outcome = asyncio.run(job_type.handler(job, Context(db=NoDatabase())))
+    outcome = asyncio.run(
+        job_type.handler(job, Context(db=NoDatabase(), archive=NoArchive()))
+    )
     assert outcome == Outcome()
 
 

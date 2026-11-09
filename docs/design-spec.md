@@ -126,15 +126,18 @@ class SourcePlugin(ABC):
 # Every handler has the same shape:
 async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
     """job.payload is already validated against FetchMatch.
-    Read own tables with `await ctx.db.fetch(select(...))`. Return
-    Outcome(writes=..., events=..., jobs=...) when done, or Outcome(retry_in=...)
-    when the work isn't ready yet. Raise RetryableError or PermanentError on failure."""
+    Read own tables with `await ctx.db.fetch(select(...))` and archived responses
+    with `await ctx.archive.get(kind, id)`. Return
+    Outcome(writes=..., archives=..., events=..., jobs=...) when done, or
+    Outcome(retry_in=...) when the work isn't ready yet. Raise RetryableError or
+    PermanentError on failure."""
 ```
 
 - `JobSpec` is work a handler asks for: type, payload, `dedupe_key` (e.g. `gank_report:match:8123456789`) and an optional delay. Any handler can return follow-up jobs, so polling is just a scheduled job type whose outcome is new jobs.
 - `Outcome(retry_in=...)` is an expected wait, such as a match that isn't parsed yet. The job runs again with `attempt + 1` and it doesn't count as a failure; it emits nothing until it finishes.
 - A plug-in's writes are SQLAlchemy statements in `Outcome.writes`; the platform runs them in the job's transaction, after its dedupe claim and with its outbox rows, so all of it commits or none does ([ADR 0028](adr/0028-plugin-writes-declared-in-the-outcome.md)). Reads go through `ctx.db.fetch`, one read-only transaction per call ([ADR 0030](adr/0030-plugin-reads-through-a-checked-fetch.md)). Tables are declared on the plug-in and migrated in the one Alembic history ([ADR 0029](adr/0029-plugin-tables-and-migrations.md)).
-- `Context` gains the rate-limited HTTP client (`ctx.http`) and the raw archive later in M2. Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
+- Raw upstream responses are kept by returning `Archive(kind, id, body)` in `Outcome.archives`; the platform uploads them to S3 before the job commits, so a committed job's archives always exist, and `ctx.archive.get` reads them back ([ADR 0031](adr/0031-raw-archive-declared-in-the-outcome.md), [ADR 0032](adr/0032-archive-keys-bucket-and-aws-settings.md)).
+- `Context` gains the rate-limited HTTP client (`ctx.http`) later in M2. Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
 
 ### Rules
 
@@ -143,7 +146,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - Errors are typed. `RetryableError` goes back on the queue with exponential backoff and jitter; `PermanentError` goes to the dead-letter queue with its reason. A payload that fails validation is dead-lettered before plug-in code runs. Handlers run under a timeout ([ADR 0018](adr/0018-job-runner.md)).
 - Handlers share one event loop with the other jobs in their worker: they await I/O and move CPU-heavy work to `asyncio.to_thread`, or every job in the process stalls ([ADR 0021](adr/0021-worker-concurrency.md)).
 - Each plug-in has its own rate-limit bucket, so Side Quest checking prices can't eat Gank Report's OpenDota budget.
-- Each plug-in owns its tables, named `<plug-in>_...`, and never reads or writes another's. Every statement it reads or writes with is checked: tables it doesn't declare and raw SQL text are refused and dead-lettered as contract violations.
+- Each plug-in owns its tables, named `<plug-in>_...`, and never reads or writes another's. Every statement it reads or writes with is checked: tables it doesn't declare and raw SQL text are refused and dead-lettered as contract violations. Likewise it reaches only its own archived responses: the platform adds the `raw/<plug-in>/` prefix, and a kind or id that could leave it is a contract violation.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
 - Available plug-ins are listed in one catalogue (`guildhall.plugins.CATALOGUE`); the enabled ones are named in `GUILDHALL_PLUGINS`. Disabling one is a config change, not a code change, and the platform refuses to start if a name is unknown ([ADR 0011](adr/0011-settings-and-plugin-catalogue.md)).
 - The platform checks every plug-in's declarations at startup and every outcome at runtime (`guildhall.platform.checks`), with the same functions the contract suite uses ([ADR 0010](adr/0010-contract-enforcement.md)).
@@ -272,7 +275,7 @@ Local development uses a tunnel (cloudflared or ngrok) so Discord can reach dock
 
 ## Data model
 
-Platform tables are shared; each plug-in owns tables prefixed with its name. Raw upstream responses go to S3 under `raw/<plugin>/<kind>/<id>.json`, so a metric change means recomputing from the archive, not re-calling the APIs.
+Platform tables are shared; each plug-in owns tables prefixed with its name. Raw upstream responses go to S3, exactly as received, under `raw/<plugin>/<kind>/<id>.json` in one bucket (`GUILDHALL_ARCHIVE_BUCKET`), so a metric change means recomputing from the archive, not re-calling the APIs. Archiving the same kind and id again replaces the body.
 
 | Table | Owner | Key columns | Purpose |
 | --- | --- | --- | --- |
@@ -298,6 +301,7 @@ These are the promises the platform makes to every plug-in. Each one has a test.
 | Guarantee | Mechanism |
 | --- | --- |
 | A job takes effect once, even if delivered twice | SQS is at-least-once; the worker records the job's `dedupe_key` in `processed_jobs` in the same transaction as the plug-in's declared writes and the outbox rows ([ADR 0028](adr/0028-plugin-writes-declared-in-the-outcome.md)) |
+| A committed job's raw responses are archived | The runner uploads the outcome's archives to S3 before it commits; a failed or slow upload commits nothing and the job is retried ([ADR 0031](adr/0031-raw-archive-declared-in-the-outcome.md)) |
 | A crashed worker loses no work | SQS visibility timeout redelivers unacknowledged messages; jobs must be safe to re-run |
 | Stopping a worker wastes no work | On SIGTERM a worker starts no new receive, lets the one in progress finish and hands back what it returns, drains running jobs up to a deadline above the job timeout, then flushes the outbox; the grace period (compose, Kubernetes) is set above drain plus flush ([ADR 0023](adr/0023-graceful-shutdown.md)) |
 | A received job starts at once | Each worker runs up to `GUILDHALL_WORKER_CONCURRENCY` jobs and receives only as many messages as it has free slots, so no message waits locally while its visibility timeout runs ([ADR 0021](adr/0021-worker-concurrency.md)) |
@@ -330,7 +334,7 @@ The image is built in two stages: uv installs the locked runtime dependencies an
 | Local cluster | kind with Kustomize `overlays/local` | Same, in-cluster | Tunnel |
 | AWS | EKS with `overlays/aws` | SQS, S3, RDS Postgres; Redis in-cluster | ALB with HTTPS (own domain, ACM certificate) |
 
-Locally, Docker Engine runs the services from `compose.yaml`: Postgres 18, Redis 8, and moto as an open-source emulator for SQS and S3. Under the `app` profile, compose also runs the bot's image: one-shot `migrate` and `queues` services prepare the schema and queues, then the worker starts ([ADR 0026](adr/0026-app-services-in-compose.md)). LocalStack was the first choice but now requires an account token, which CI and Dependabot pull requests cannot use ([ADR 0012](adr/0012-local-infrastructure.md)).
+Locally, Docker Engine runs the services from `compose.yaml`: Postgres 18, Redis 8, and moto as an open-source emulator for SQS and S3. Under the `app` profile, compose also runs the bot's image: one-shot `migrate` and `aws-setup` services prepare the schema, the queues and the archive bucket, then the worker starts ([ADR 0026](adr/0026-app-services-in-compose.md), [ADR 0032](adr/0032-archive-keys-bucket-and-aws-settings.md)). LocalStack was the first choice but now requires an account token, which CI and Dependabot pull requests cannot use ([ADR 0012](adr/0012-local-infrastructure.md)).
 
 ### AWS resources (Terraform)
 

@@ -98,6 +98,19 @@ class Event(ContractModel):
     dedupe_key: NonEmptyStr
 
 
+class Archive(ContractModel):
+    """One raw upstream response to keep, e.g. `Archive(kind="match", id="42", ...)`.
+
+    `kind` matches `[a-z][a-z0-9_]*` and `id` matches `[A-Za-z0-9][A-Za-z0-9._-]*`
+    (at most 200 characters); the platform checks both. `body` is the response
+    exactly as received, normally JSON (docs/adr/0031).
+    """
+
+    kind: NonEmptyStr
+    id: NonEmptyStr
+    body: bytes = Field(repr=False)
+
+
 class Outcome(ContractModel):
     """The result of running a job.
 
@@ -105,6 +118,8 @@ class Outcome(ContractModel):
     follow-up jobs; the platform commits all of them together with the job's
     dedupe claim, or none (docs/adr/0028). `writes` are SQLAlchemy insert,
     update or delete statements on the plug-in's own tables, run in order.
+    `archives` are raw upstream responses; the platform uploads them before
+    that commit, so a committed job's archives always exist (docs/adr/0031).
 
     A job that is not ready yet (an expected wait, not a failure) sets
     `retry_in` instead and does nothing else, so the platform runs it again
@@ -114,14 +129,18 @@ class Outcome(ContractModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     writes: tuple[UpdateBase, ...] = ()
+    archives: tuple[Archive, ...] = ()
     events: tuple[SerializeAsAny[Event], ...] = ()
     jobs: tuple[JobSpec, ...] = ()
     retry_in: Annotated[timedelta, AfterValidator(_positive)] | None = None
 
     @model_validator(mode="after")
     def _retry_emits_nothing(self) -> Self:
-        if self.retry_in is not None and (self.writes or self.events or self.jobs):
+        if self.retry_in is not None and (
+            self.writes or self.archives or self.events or self.jobs
+        ):
             raise ValueError(
-                "an outcome that retries cannot write, emit events or ask for jobs"
+                "an outcome that retries cannot write, archive, emit events or ask"
+                " for jobs"
             )
         return self

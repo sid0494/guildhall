@@ -25,6 +25,8 @@ MAX_QUEUE_DELAY = timedelta(minutes=15)
 """SQS rejects message delays longer than 15 minutes."""
 
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
+_ARCHIVE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
+"""Starts with a letter or digit and has no slash, so it cannot leave the prefix."""
 
 
 class ContractViolationError(Exception):
@@ -116,8 +118,18 @@ def check_read(plugin: SourcePlugin, statement: object) -> list[str]:
     return problems
 
 
+def check_archive_key(kind: str, id: str) -> list[str]:
+    """Problems with the kind and id that name an archived response."""
+    problems: list[str] = []
+    if not _IDENTIFIER.fullmatch(kind):
+        problems.append(f"archive kind {kind!r} must match {_IDENTIFIER.pattern}")
+    if not _ARCHIVE_ID.fullmatch(id):
+        problems.append(f"archive id {id!r} must match {_ARCHIVE_ID.pattern}")
+    return problems
+
+
 def check_outcome(plugin: SourcePlugin, outcome: Outcome) -> list[str]:
-    """Problems with a handler's outcome: writes, namespacing, follow-ups, delays."""
+    """Problems with a handler's outcome: writes, archives, namespacing, follow-ups."""
     problems: list[str] = []
     key_prefix = f"{plugin.name}:"
     type_prefix = f"{plugin.name}."
@@ -137,6 +149,15 @@ def check_outcome(plugin: SourcePlugin, outcome: Outcome) -> list[str]:
         problems.extend(
             f"write {problem}" for problem in check_statement(plugin, write)
         )
+
+    archived: set[tuple[str, str]] = set()
+    for archive in outcome.archives:
+        problems.extend(check_archive_key(archive.kind, archive.id))
+        if (archive.kind, archive.id) in archived:
+            problems.append(
+                f"archive {archive.kind!r} {archive.id!r} is declared more than once"
+            )
+        archived.add((archive.kind, archive.id))
 
     if outcome.retry_in is not None and outcome.retry_in > MAX_QUEUE_DELAY:
         problems.append(f"retry delay {outcome.retry_in} exceeds {MAX_QUEUE_DELAY}")

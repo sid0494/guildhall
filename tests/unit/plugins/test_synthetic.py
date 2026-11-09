@@ -32,6 +32,13 @@ class NoDatabase:
         raise AssertionError("unexpected database read")
 
 
+class NoArchive:
+    """`Context.archive` for code that must not read archives."""
+
+    async def get(self, kind: str, id: str) -> bytes | None:
+        raise AssertionError("unexpected archive read")
+
+
 def run(work: SyntheticWork, attempt: int = 1) -> Outcome:
     job = Job[SyntheticWork](
         type="work",
@@ -39,7 +46,9 @@ def run(work: SyntheticWork, attempt: int = 1) -> Outcome:
         dedupe_key=f"synthetic:work:{work.work_id}",
         attempt=attempt,
     )
-    return asyncio.run(SyntheticPlugin().work(job, Context(db=NoDatabase())))
+    return asyncio.run(
+        SyntheticPlugin().work(job, Context(db=NoDatabase(), archive=NoArchive()))
+    )
 
 
 def test_plain_work_finishes_with_no_output() -> None:
@@ -105,3 +114,14 @@ def test_record_writes_one_row_to_its_own_table() -> None:
 
 def test_work_writes_nothing_unless_asked_to_record() -> None:
     assert run(SyntheticWork(work_id="a", fan_out=1)).writes == ()
+
+
+def test_archive_keeps_the_payload_as_the_raw_response() -> None:
+    work = SyntheticWork(work_id="a.1", archive=True)
+    (archive,) = run(work).archives
+    assert (archive.kind, archive.id) == ("work", "a.1")
+    assert SyntheticWork.model_validate_json(archive.body) == work
+
+
+def test_work_archives_nothing_unless_asked_to() -> None:
+    assert run(SyntheticWork(work_id="a", record=True)).archives == ()

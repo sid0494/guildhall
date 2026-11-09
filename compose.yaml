@@ -2,7 +2,7 @@
 # under the "app" profile (docs/adr/0026).
 #
 #   docker compose up -d --wait                  infrastructure only
-#   docker compose --profile app up -d --build   also migrate, create queues, run the worker
+#   docker compose --profile app up -d --build   also migrate, create queues and bucket, run the worker
 #
 # Compose reads .env to fill in ${...} below (see .env.example). Third-party
 # images are pinned by tag and digest; Dependabot keeps them current.
@@ -34,10 +34,10 @@ services:
       postgres:
         condition: service_healthy
 
-  queues:
+  aws-setup:
     <<: *guildhall
-    # One-shot: create the job queue and its dead-letter queue on moto.
-    command: ["python", "-m", "guildhall.platform.dev_queues"]
+    # One-shot: create the job queues and the archive bucket on moto.
+    command: ["python", "-m", "guildhall.platform.dev_aws"]
     depends_on:
       moto:
         condition: service_healthy
@@ -47,7 +47,7 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      queues:
+      aws-setup:
         condition: service_completed_successfully
     # Above drain (35 s) plus outbox flush (5 s), so SIGKILL never cuts a drain
     # short (docs/adr/0023).

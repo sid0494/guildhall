@@ -370,6 +370,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiobotocore" },
     { name = "alembic" },
+    { name = "botocore" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -385,13 +386,14 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
-    { name = "types-aiobotocore", extra = ["sqs"] },
+    { name = "types-aiobotocore", extra = ["s3", "sqs"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiobotocore", specifier = ">=3.10.0" },
     { name = "alembic", specifier = ">=1.20.1" },
+    { name = "botocore", specifier = ">=1.43.117" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.8" },
     { name = "pydantic", specifier = ">=2.14.3" },
     { name = "pydantic-settings", specifier = ">=2.16.2" },
@@ -407,7 +409,7 @@ dev = [
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.1.post1" },
     { name = "ruff", specifier = ">=0.17.4" },
-    { name = "types-aiobotocore", extras = ["sqs"], specifier = ">=3.10.0" },
+    { name = "types-aiobotocore", extras = ["s3", "sqs"], specifier = ">=3.10.0" },
 ]
 
 [[package]]
@@ -1069,8 +1071,20 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+s3 = [
+    { name = "types-aiobotocore-s3" },
+]
 sqs = [
     { name = "types-aiobotocore-sqs" },
+]
+
+[[package]]
+name = "types-aiobotocore-s3"
+version = "3.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/91/a9/15633c16c87b9f936f18c5c06386ea924843797639c26cbac3121d52c62f/types_aiobotocore_s3-3.10.0.tar.gz", hash = "sha256:5bde3b1cc11f14bcdf991b75dc15bdd884a7a45f80e57cba724de0a196424caa", size = 80065, upload-time = "2026-10-24T03:51:47.619Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/35/04d9e94dc0bde68b204da078cf0a0fac564275c74057cad2fdaef917be60/types_aiobotocore_s3-3.10.0-py3-none-any.whl", hash = "sha256:c25ca89e83c6512250e730693d6f6f243bbaaa76d51720f4949645761698c74c", size = 87990, upload-time = "2026-10-24T03:51:44.374Z" },
 ]
 
 [[package]]

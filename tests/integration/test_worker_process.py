@@ -19,10 +19,12 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from guildhall.platform.archive import ArchiveSettings, S3ArchiveStore
+from guildhall.platform.aws import open_sqs
 from guildhall.platform.database import DatabaseSettings
 from guildhall.platform.dedupe import processed_jobs
 from guildhall.platform.envelope import JobEnvelope
-from guildhall.platform.queue import JobQueue, QueueSettings, open_sqs
+from guildhall.platform.queue import JobQueue, QueueSettings
 
 WORKER = Path(sys.executable).with_name("guildhall-worker")
 
@@ -63,15 +65,19 @@ class WorkerProcess:
 async def worker(
     job_queue: JobQueue,
     queue_settings: QueueSettings,
+    archive: S3ArchiveStore,
+    archive_settings: ArchiveSettings,
     test_database_settings: DatabaseSettings,
 ) -> AsyncIterator[WorkerProcess]:
-    """A running worker on this test's queues; killed if a test leaves it running."""
+    """A running worker on this test's queues and bucket; killed if a test leaves
+    it running."""
     env = {
         **os.environ,
         "GUILDHALL_PLUGINS": "synthetic",
         "GUILDHALL_POSTGRES_DB": test_database_settings.db,
         "GUILDHALL_JOBS_QUEUE_NAME": queue_settings.jobs_queue_name,
         "GUILDHALL_DEAD_LETTER_QUEUE_NAME": queue_settings.dead_letter_queue_name,
+        "GUILDHALL_ARCHIVE_BUCKET": archive_settings.archive_bucket,
         "GUILDHALL_LOG_FORMAT": "json",
         "GUILDHALL_RECEIVE_WAIT_SECONDS": "1",  # an idle stop waits out one poll
     }

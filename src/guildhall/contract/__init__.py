@@ -3,8 +3,10 @@
 Plug-ins import from this package only, never from `guildhall.platform`.
 """
 
+from guildhall.contract.archive import RawArchive
 from guildhall.contract.errors import PermanentError, RetryableError
 from guildhall.contract.models import (
+    Archive,
     ContractModel,
     Event,
     Job,
@@ -17,6 +19,7 @@ from guildhall.contract.plugin import Context, Handler, JobType, SourcePlugin
 from guildhall.contract.storage import Database, plugin_metadata
 
 __all__ = [
+    "Archive",
     "Context",
     "ContractModel",
     "Database",
@@ -28,6 +31,7 @@ __all__ = [
     "Outcome",
     "PermanentError",
     "RateLimitPolicy",
+    "RawArchive",
     "RetryableError",
     "Schedule",
     "SourcePlugin",

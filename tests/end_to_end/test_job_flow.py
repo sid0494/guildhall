@@ -1,5 +1,7 @@
 """M1 acceptance: a plug-in's jobs flow end to end; a duplicate is a no-op.
 
+Since M2 the job also archives a raw response, which must be in the bucket.
+
 Runs against the containerised stack: the image, the compose wiring, the
 one-shot setup services and the worker, exactly as they would be deployed.
 """
@@ -13,11 +15,13 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from guildhall.platform.archive import S3ArchiveStore
+from guildhall.platform.aws import open_sqs
 from guildhall.platform.dedupe import processed_jobs
 from guildhall.platform.envelope import JobEnvelope
 from guildhall.platform.outbox import outbox_events, outbox_jobs
-from guildhall.platform.queue import JobQueue, QueueSettings, open_sqs
-from guildhall.plugins.synthetic import records
+from guildhall.platform.queue import JobQueue, QueueSettings
+from guildhall.plugins.synthetic import SyntheticWork, records
 
 DEADLINE_SECONDS = 30
 
@@ -78,7 +82,10 @@ async def queue_is_empty(settings: QueueSettings) -> bool:
 
 
 async def test_jobs_flow_end_to_end_and_a_duplicate_delivery_is_a_no_op(
-    engine: AsyncEngine, queue: JobQueue, queue_settings: QueueSettings
+    engine: AsyncEngine,
+    queue: JobQueue,
+    queue_settings: QueueSettings,
+    archive: S3ArchiveStore,
 ) -> None:
     work_id = f"acceptance-{uuid.uuid4().hex[:12]}"
     jobs = f"synthetic:work:{work_id}"  # the job and its follow-ups, "<id>.<n>"
@@ -88,7 +95,13 @@ async def test_jobs_flow_end_to_end_and_a_duplicate_delivery_is_a_no_op(
         type="work",
         dedupe_key=jobs,
         attempt=1,
-        payload={"work_id": work_id, "fan_out": 3, "emit_events": 2, "record": True},
+        payload={
+            "work_id": work_id,
+            "fan_out": 3,
+            "emit_events": 2,
+            "record": True,
+            "archive": True,
+        },
     ).model_dump_json()
 
     await queue.send(body)
@@ -103,6 +116,9 @@ async def test_jobs_flow_end_to_end_and_a_duplicate_delivery_is_a_no_op(
     assert await unsent(engine, jobs) == 0
     assert await count(engine, outbox_events, events) == 2
     assert await recorded(engine, work_id) == 1  # the plug-in's own row
+    archived = await archive.get(f"raw/synthetic/work/{work_id}.json")
+    assert archived is not None  # uploaded before the job committed
+    assert SyntheticWork.model_validate_json(archived).work_id == work_id
 
     await queue.send(body)  # the same message again, as SQS may deliver it
 
