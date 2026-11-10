@@ -6,6 +6,7 @@ calls the same functions, so CI and production enforce identical rules. Each
 function returns every problem found, so one run reports them all.
 """
 
+import inspect
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -21,6 +22,7 @@ from guildhall.contract import (
     AccountLink,
     Command,
     ContractModel,
+    Event,
     JobType,
     LinkedAccount,
     Outcome,
@@ -48,6 +50,22 @@ _ARCHIVE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
 
 class ContractViolationError(Exception):
     """A plug-in broke a contract rule while running; dead-lettered, never retried."""
+
+
+def event_type_name(event_type: type[Event]) -> str | None:
+    """The `type` an event class fixes as its default, e.g. "gank_report.x"."""
+    field = event_type.model_fields.get("type")
+    default = field.default if field is not None else None
+    return default if isinstance(default, str) else None
+
+
+def event_types_by_name(plugin: SourcePlugin) -> dict[str, type[Event]]:
+    """The plug-in's declared event classes keyed by their `type`."""
+    return {
+        name: event_type
+        for event_type in plugin.event_types()
+        if (name := event_type_name(event_type)) is not None
+    }
 
 
 def job_types_by_name(plugin: SourcePlugin) -> dict[str, JobType[Any]]:
@@ -94,6 +112,7 @@ def check_declarations(plugin: SourcePlugin) -> list[str]:
         scheduled.add(schedule.job_type)
 
     problems.extend(_check_commands(plugin.commands()))
+    problems.extend(_check_events(plugin))
 
     tables = plugin.tables
     if dict(tables.naming_convention) != NAMING_CONVENTION:
@@ -139,6 +158,25 @@ def _check_commands(commands: list[Command[Any]]) -> list[str]:
     for path in paths:
         if len(path) == 2 and (path[0],) in paths:
             problems.append(f"/{path[0]} is both a command and a group of subcommands")
+    return problems
+
+
+def _check_events(plugin: SourcePlugin) -> list[str]:
+    problems: list[str] = []
+    seen: set[str] = set()
+    for event_type in plugin.event_types():
+        name = event_type_name(event_type)
+        if name is None or not name.startswith(f"{plugin.name}."):
+            problems.append(
+                f"event class {event_type.__name__} must fix its type as a default"
+                f" starting with {plugin.name + '.'!r}"
+            )
+        elif name in seen:
+            problems.append(f"event type {name!r} is declared more than once")
+        else:
+            seen.add(name)
+    if inspect.iscoroutinefunction(plugin.render):
+        problems.append("render must be a plain function: it may not await I/O")
     return problems
 
 
@@ -277,6 +315,7 @@ def check_outcome(plugin: SourcePlugin, outcome: Outcome) -> list[str]:
     key_prefix = f"{plugin.name}:"
     type_prefix = f"{plugin.name}."
     declared = job_types_by_name(plugin)
+    declared_events = event_types_by_name(plugin)
 
     for event in outcome.events:
         if not event.dedupe_key.startswith(key_prefix):
@@ -286,6 +325,10 @@ def check_outcome(plugin: SourcePlugin, outcome: Outcome) -> list[str]:
         if not event.type.startswith(type_prefix):
             problems.append(
                 f"event type {event.type!r} must start with {type_prefix!r}"
+            )
+        elif event.type not in declared_events:
+            problems.append(
+                f"event type {event.type!r} is not one of the plug-in's event_types()"
             )
 
     for write in outcome.writes:

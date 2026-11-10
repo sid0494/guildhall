@@ -12,6 +12,7 @@ import importlib
 import inspect
 import json
 import pkgutil
+import socket
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,8 +37,10 @@ import guildhall.plugins
 from guildhall.contract import (
     Context,
     ContractModel,
+    Event,
     Job,
     LinkedAccount,
+    Message,
     Outcome,
     PermanentError,
     RetryableError,
@@ -47,11 +50,13 @@ from guildhall.contract import (
 from guildhall.platform.checks import (
     check_declarations,
     check_outcome,
+    event_types_by_name,
     job_types_by_name,
 )
 from guildhall.plugins import CATALOGUE
 from guildhall.plugins.gank_report import AnalyzeMatch, FetchMatch, GankReportPlugin
-from guildhall.plugins.synthetic import SyntheticPlugin, SyntheticWork
+from guildhall.plugins.gank_report.events import MatchAnalyzed, MetricResult
+from guildhall.plugins.synthetic import SyntheticPlugin, SyntheticWork, WorkDone
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,8 @@ class Example:
 class PluginCase:
     plugin: SourcePlugin
     examples: Mapping[str, Sequence[Example]]
+    events: Sequence[Event] = ()
+    """Example events, at least one per declared event type, for `render`."""
 
 
 def opendota_serving(match_fixture: str) -> Callable[[], Context]:
@@ -179,6 +186,26 @@ CASES = [
                 ),
             ],
         },
+        events=[
+            MatchAnalyzed(
+                dedupe_key="gank_report:match_analyzed:5001:1",
+                match_id=5001,
+                discord_user_id="user-1",
+                hero_id=42,
+                won=False,
+                mode="normal",
+                parsed=True,
+                played_at=TICK,
+                metrics=(
+                    MetricResult(
+                        name="gpm", value=499.0, baseline=471.0, baseline_games=12
+                    ),
+                    MetricResult(
+                        name="last_hits_10", value=None, baseline=None, baseline_games=0
+                    ),
+                ),
+            ),
+        ],
     ),
     PluginCase(
         SyntheticPlugin(),
@@ -193,6 +220,7 @@ CASES = [
                 Example(SyntheticWork(work_id="doomed", fail="permanent")),
             ]
         },
+        events=[WorkDone(dedupe_key="synthetic:work_done:x:0", work_id="x", index=0)],
     ),
 ]
 
@@ -277,3 +305,44 @@ def test_example_outcome_satisfies_the_contract(
     except RetryableError, PermanentError:
         return
     assert check_outcome(case.plugin, outcome) == []
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case.plugin.name)
+def test_every_event_type_has_an_example(case: PluginCase) -> None:
+    declared = set(event_types_by_name(case.plugin))
+    assert declared <= {event.type for event in case.events}
+
+
+@pytest.fixture
+def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any attempt to open a connection while it is active."""
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("render tried to use the network")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(socket, "getaddrinfo", refuse)
+
+
+RENDERED = [
+    pytest.param(case, event, id=f"{case.plugin.name}-{event.type}")
+    for case in CASES
+    for event in case.events
+]
+
+
+@pytest.mark.parametrize(("case", "event"), RENDERED)
+def test_render_does_no_io_and_returns_a_message_or_none(
+    case: PluginCase, event: Event, no_network: None
+) -> None:
+    rebuilt = event_types_by_name(case.plugin)[event.type].model_validate_json(
+        event.model_dump_json()
+    )
+    rendered = case.plugin.render(rebuilt)
+    assert rendered is None or isinstance(rendered, Message)
+
+
+def test_the_network_guard_works(no_network: None) -> None:
+    with pytest.raises(AssertionError, match="tried to use the network"):
+        socket.create_connection(("example.com", 80))

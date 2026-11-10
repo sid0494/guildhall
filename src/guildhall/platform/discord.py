@@ -13,6 +13,8 @@ import httpx
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from guildhall.contract import Embed, Message
+
 API_URL: Final = "https://discord.com/api/v10"
 USER_AGENT: Final = "DiscordBot (https://github.com/sid0494/guildhall, 0.1)"
 
@@ -79,3 +81,30 @@ def _reason(response: httpx.Response) -> str:
         return str(response.json().get("message", ""))
     except ValueError:
         return ""
+
+
+def discord_message(message: Message) -> dict[str, Any]:
+    """Discord's JSON for a message (docs/adr/0068).
+
+    Only the users in `mentions` can be notified: never @everyone, roles or
+    anyone else named in user-supplied text.
+    """
+    body: dict[str, Any] = {
+        "allowed_mentions": {"parse": [], "users": list(message.mentions)}
+    }
+    if message.content:
+        body["content"] = message.content
+    if message.embeds:
+        body["embeds"] = [_embed(embed) for embed in message.embeds]
+    return body
+
+
+def _embed(embed: Embed) -> dict[str, Any]:
+    fields = {
+        "title": embed.title,
+        "description": embed.description,
+        "color": embed.colour,
+        "fields": [field.model_dump() for field in embed.fields] or None,
+        "timestamp": embed.timestamp.isoformat() if embed.timestamp else None,
+    }
+    return {key: value for key, value in fields.items() if value is not None}

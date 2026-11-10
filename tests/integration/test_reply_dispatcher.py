@@ -92,7 +92,7 @@ async def test_a_reply_edits_the_original_message_without_pinging_anyone(
     assert request.url.path == f"/api/v10/webhooks/app-1/{TOKEN}/messages/@original"
     assert json.loads(request.content) == {
         "content": "hi @everyone",
-        "allowed_mentions": {"parse": []},
+        "allowed_mentions": {"parse": [], "users": []},  # nobody is notified
     }
     assert "authorization" not in request.headers  # the token in the path is enough
     row = await stored(engine, reply_id)

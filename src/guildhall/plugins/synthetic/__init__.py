@@ -98,6 +98,9 @@ class SyntheticPlugin(SourcePlugin):
     def job_types(self) -> list[JobType[Any]]:
         return [JobType("work", SyntheticWork, self.work)]
 
+    def event_types(self) -> list[type[Event]]:
+        return [WorkDone]
+
     def commands(self) -> list[Command[Any]]:
         return [
             Command(

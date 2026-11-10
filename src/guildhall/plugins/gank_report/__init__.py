@@ -19,6 +19,7 @@ from guildhall.contract import (
     Archive,
     Context,
     ContractModel,
+    Event,
     Job,
     JobSpec,
     JobType,
@@ -123,6 +124,9 @@ class GankReportPlugin(SourcePlugin):
             JobType("poll_matches", ScheduledRun, self.poll_matches),
             JobType("backfill", LinkedAccount, self.backfill),
         ]
+
+    def event_types(self) -> list[type[Event]]:
+        return [MatchAnalyzed]
 
     def account_link(self) -> AccountLink | None:
         return AccountLink(

@@ -20,7 +20,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from guildhall.platform.discord import API_URL, USER_AGENT
+from guildhall.contract import Message
+from guildhall.platform.discord import API_URL, USER_AGENT, discord_message
 from guildhall.platform.replies import outbox_replies
 
 REPLY_DEADLINE: Final = timedelta(minutes=14)
@@ -28,8 +29,6 @@ RETENTION: Final = timedelta(days=1)
 MAX_RATE_LIMIT_PAUSE: Final = 60.0
 MAX_RETRY_PAUSE: Final = 30.0
 """After a failed send, the pass waits 2, 4, 8... seconds, up to this."""
-NO_MENTIONS: Final[dict[str, list[str]]] = {"parse": []}
-"""Replies can hold user text: never let one ping @everyone, roles or users."""
 
 _log = structlog.get_logger(__name__)
 
@@ -126,7 +125,7 @@ class ReplyDispatcher:
         )
         try:
             response = await self._client.patch(
-                path, json=row.message | {"allowed_mentions": NO_MENTIONS}
+                path, json=discord_message(Message.model_validate(row.message))
             )
         except httpx.HTTPError as error:
             return _Sent.TRY_AGAIN, type(error).__name__
