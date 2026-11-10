@@ -197,9 +197,15 @@ async def test_per_account_schedules_fan_out_over_linked_accounts(
             str(second),
         ]
         assert "source-a" not in reports[0].dedupe_key  # personal ids stay out
-        assert [run.account for run in runs(reports)] == [
-            LinkedAccount(discord_user_id="discord-user-a", external_id="source-a"),
-            LinkedAccount(discord_user_id="discord-user-b", external_id="source-b"),
+        accounts = [run.account for run in runs(reports)]
+        assert [account.id for account in accounts if account] == [first, second]
+        assert accounts == [
+            LinkedAccount(
+                id=first, discord_user_id="discord-user-a", external_id="source-a"
+            ),
+            LinkedAccount(
+                id=second, discord_user_id="discord-user-b", external_id="source-b"
+            ),
         ]
         assert {run.scheduled_for for run in runs(reports)} == {sunday}
     finally:

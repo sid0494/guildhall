@@ -1,16 +1,14 @@
 """Unit tests for the plug-in interface."""
 
 import asyncio
-from collections.abc import Sequence
 from typing import Any
 
 import pytest
-from sqlalchemy import Row, Select
+from fakes import no_io_context
 
 from guildhall.contract import (
     Context,
     ContractModel,
-    HttpResponse,
     Job,
     JobType,
     Outcome,
@@ -18,34 +16,7 @@ from guildhall.contract import (
     SourcePlugin,
     plugin_metadata,
 )
-from guildhall.contract.http import Params
 from guildhall.contract.storage import NAMING_CONVENTION
-
-
-class NoDatabase:
-    """`Context.db` for code that must not read: fails the test if it does."""
-
-    async def fetch(self, statement: Select[Any]) -> Sequence[Row[Any]]:
-        raise AssertionError("unexpected database read")
-
-
-class NoArchive:
-    """`Context.archive` for code that must not read archives."""
-
-    async def get(self, kind: str, id: str) -> bytes | None:
-        raise AssertionError("unexpected archive read")
-
-
-class NoHttp:
-    """`Context.http` for code that must not call upstream."""
-
-    async def get(self, url: str, *, params: Params | None = None) -> HttpResponse:
-        raise AssertionError("unexpected upstream call")
-
-    async def post(
-        self, url: str, *, params: Params | None = None, json: Any = None
-    ) -> HttpResponse:
-        raise AssertionError("unexpected upstream call")
 
 
 class Ping(ContractModel):
@@ -91,11 +62,7 @@ def test_job_type_handler_runs_with_a_typed_job() -> None:
     job = Job[Ping](
         type="ping", payload=Ping(message="hi"), dedupe_key="minimal:1", attempt=1
     )
-    outcome = asyncio.run(
-        job_type.handler(
-            job, Context(db=NoDatabase(), archive=NoArchive(), http=NoHttp())
-        )
-    )
+    outcome = asyncio.run(job_type.handler(job, no_io_context()))
     assert outcome == Outcome()
 
 

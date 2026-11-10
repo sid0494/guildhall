@@ -80,7 +80,7 @@ guildhall/
     bootstrap.py          composition root: wires the plug-in catalogue into the platform
     contract/             the plug-in contract: interface, job and event types, errors
     platform/             worker loop, dedupe, rate limiter, outbox, plug-in registry, logging
-    plugins/gank_report/  discover, fetch_match, metrics, commands, render
+    plugins/gank_report/  poll_matches, fetch_match, analyze_match, metrics, commands, render
     plugins/side_quest/   library and wishlist sync, prices, alerts, commands
     plugins/synthetic/    payload-driven plug-in for end-to-end tests, drills and load checks
     api/                  FastAPI app and the Discord interactions endpoint
@@ -138,7 +138,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - `Outcome(retry_in=...)` is an expected wait, such as a match that isn't parsed yet. The job runs again with `attempt + 1` and it doesn't count as a failure; it emits nothing until it finishes.
 - A plug-in's writes are SQLAlchemy statements in `Outcome.writes`; the platform runs them in the job's transaction, after its dedupe claim and with its outbox rows, so all of it commits or none does ([ADR 0028](adr/0028-plugin-writes-declared-in-the-outcome.md)). Reads go through `ctx.db.fetch`, one read-only transaction per call ([ADR 0030](adr/0030-plugin-reads-through-a-checked-fetch.md)). Tables are declared on the plug-in and migrated in the one Alembic history ([ADR 0029](adr/0029-plugin-tables-and-migrations.md)).
 - Raw upstream responses are kept by returning `Archive(kind, id, body)` in `Outcome.archives`; the platform uploads them to S3 before the job commits, so a committed job's archives always exist, and `ctx.archive.get` reads them back ([ADR 0031](adr/0031-raw-archive-declared-in-the-outcome.md), [ADR 0032](adr/0032-archive-keys-bucket-and-aws-settings.md)).
-- Schedules fire from every worker: the first to claim a tick in Postgres queues its jobs through the outbox, so each tick fires once. Ticks missed while no worker ran coalesce into one run; a new schedule first fires at its next tick. A `per_account` schedule creates one job per linked account, keyed by the link's row ID, never the account's external ID ([ADR 0036](adr/0036-scheduling-in-workers-with-a-postgres-claim.md), [ADR 0037](adr/0037-missed-ticks-fire-once.md), [ADR 0038](adr/0038-scheduled-runs-and-linked-accounts.md)).
+- Schedules fire from every worker: the first to claim a tick in Postgres queues its jobs through the outbox, so each tick fires once. Ticks missed while no worker ran coalesce into one run; a new schedule first fires at its next tick. A `per_account` schedule creates one job per linked account, keyed by the link's row ID (`LinkedAccount.id`), never the account's external ID ([ADR 0036](adr/0036-scheduling-in-workers-with-a-postgres-claim.md), [ADR 0037](adr/0037-missed-ticks-fire-once.md), [ADR 0038](adr/0038-scheduled-runs-and-linked-accounts.md)).
 - Upstream calls go through `ctx.http.get` and `.post`, which return the contract's own `HttpResponse`. Each call takes from the plug-in's shared budget; a short wait happens in place, while a longer one, a `429` or an unreachable limiter defers the whole job without counting it as an attempt. `5xx`, timeouts and connection failures raise `RetryableError`; every other status is the plug-in's to judge. Handlers must not catch broad exceptions around `ctx.http` ([ADR 0033](adr/0033-throttled-jobs-are-deferred.md), [ADR 0035](adr/0035-plugin-http-contract.md)).
 - Discord commands (`commands()`) and rendering (`render()`, no I/O) join the contract in M2 as members with defaults, so existing plug-ins are unaffected.
 
@@ -160,7 +160,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 
 After each match, Gank Report posts a short report on the 3–4 skills I've chosen to work on. Every Sunday it posts the trend. The question it answers is "am I getting better at the things I'm practicing?", measured against my own history per hero.
 
-**Data source:** the OpenDota API. Free, no key required, roughly 60 requests a minute and 2,000 a day on the free tier.
+**Data source:** the OpenDota API. Free, no key required: 60 requests a minute and 3,000 a day per IP address on the free tier (from its `x-rate-limit-remaining-*` headers, 2026-11-10). Gank Report budgets 50 a minute and 2,000 a day, leaving headroom for calls made by hand ([ADR 0048](adr/0048-gank-report-rate-budget.md)).
 
 ### Metrics
 
@@ -178,11 +178,13 @@ Metrics live in a registry of small functions (`match_json → value or missing`
 
 ### Match pipeline
 
-1. Every 15 minutes, a scheduled `poll_matches` job fetches my recent matches and returns one `fetch_match` job per new match ID, keyed `gank_report:match:<id>`.
-2. `fetch_match` gets the full match and archives the raw JSON to S3.
-3. If the match isn't parsed yet, it requests a parse and returns a retry outcome with a delay. Parsing usually takes 1–5 minutes, and some matches never parse.
-4. After 3 attempts, it computes what it can from the basic record and marks parsed-only metrics as missing.
-5. Metrics are written to Postgres and a `gank_report.match_analyzed` event goes to the outbox.
+A match is fetched once, whoever played in it; each linked account in it is then analysed from the archived response, so friends in one match cost one fetch and a metric change is recomputed without calling OpenDota ([ADR 0043](adr/0043-fetch-per-match-analyse-per-account.md)).
+
+1. Every 15 minutes, a scheduled `poll_matches` job fetches each linked account's recent matches and, per new match, returns a `fetch_match` job keyed `gank_report:match:<id>` and an `analyze_match` job keyed `gank_report:analyze:<id>:<link id>`.
+2. `fetch_match` gets the full match. While it is unparsed, it requests a parse and waits 5, then 10 minutes; the third attempt finishes either way, so parsed-only metrics may be missing. Parsing usually takes 1–5 minutes, and some matches never parse ([ADR 0044](adr/0044-parse-retry-policy.md)).
+3. When it finishes, it archives the raw JSON to S3 and records the match row. Responses are read through models of just the fields used; an unexpected one fails permanently, naming fields but never values ([ADR 0047](adr/0047-opendota-response-models.md)).
+4. `analyze_match` waits, checking every 5 minutes for up to about two hours, until the match row exists; then it reads the archived match and records the account's part in it ([ADR 0046](adr/0046-analysis-waits-for-the-fetch.md)).
+5. Metrics are written to Postgres and a `gank_report.match_analyzed` event goes to the outbox (from B3).
 
 ### Reports
 
@@ -289,8 +291,9 @@ Platform tables are shared; each plug-in owns tables prefixed with its name. Raw
 | `outbox_jobs` | Platform | `id`, `dedupe_key`, `body` (job envelope), `delay_seconds`, `sent_at` | Follow-up jobs waiting for the relay to send them to SQS ([ADR 0017](adr/0017-queue-client-and-outbox-tables.md)) |
 | `interactions_seen` | Platform | `interaction_id` (primary key), `received_at` | Discord retry dedupe |
 | `synthetic_records` | Synthetic | `work_id`, `attempt`, `recorded_at` | Written by synthetic jobs that ask to be recorded; exercises plug-in storage in tests and drills |
-| `gank_report_matches` | Gank Report | `match_id`, `hero_id`, `played_at`, `parsed`, `s3_key` | One row per match |
-| `gank_report_metrics` | Gank Report | `match_id`, `metric`, `value` | Long format, so new metrics need no migration |
+| `gank_report_matches` | Gank Report | `match_id`, `played_at`, `duration_seconds`, `game_mode`, `lobby_type`, `parsed`, `fetched_at` | One row per match, written when its fetch is final ([ADR 0045](adr/0045-gank-report-tables.md)) |
+| `gank_report_player_matches` | Gank Report | `match_id`, `account_id` (Dota account; together the primary key), `hero_id`, `player_slot`, `won`, `analyzed_at` | One linked account's part in a match ([ADR 0045](adr/0045-gank-report-tables.md)) |
+| `gank_report_metrics` | Gank Report | `match_id`, `account_id`, `metric`, `value` | Long format, so new metrics need no migration |
 | `gank_report_focus` | Gank Report | `discord_user_id`, `metric` | Chosen skills |
 | `side_quest_games` | Side Quest | `appid`, `name`, `playtime_min`, `state`, `status_source` | Library and backlog state |
 | `side_quest_wishlist` | Side Quest | `appid`, `itad_id`, `target_price_cents` | What to watch |
@@ -377,7 +380,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 - **Unit:** metric functions, alert rules, state transitions, signature verification.
 - **Integration:** code that depends on Postgres behaviour (constraints, transactions, locking) runs against the compose services, in a separate `guildhall_test` database, marked `integration`. Pre-commit skips them; CI runs them in their own job ([ADR 0015](adr/0015-integration-tests-on-compose.md)).
 - **End-to-end:** the containerised stack, run as a separate throwaway compose project, driven from outside through the queue and Postgres; `make test-e2e` ([ADR 0027](adr/0027-end-to-end-tests.md)). The first test is M1's acceptance scenario.
-- **Contract tests:** a shared suite every plug-in must pass, run against a fake platform: declarations are valid, every job type has examples, payloads survive a JSON round trip, outcomes are namespaced, errors are typed, and (from M2) `render` does no I/O. A guard test fails if a plug-in has no examples.
+- **Contract tests:** a shared suite every plug-in must pass, run against a fake platform: declarations are valid, every job type has examples, payloads survive a JSON round trip, outcomes are namespaced, errors are typed, and (from M2) `render` does no I/O. A guard test fails if a plug-in has no examples. Each example brings the services its handler gets, from shared fakes in `tests/support/fakes.py` that are type-checked against the contract's protocols ([ADR 0049](adr/0049-shared-test-fakes.md)).
 - **Recorded fixtures:** real upstream responses (a parsed match, an unparsed match, a wishlist, a price batch) saved once and replayed, so tests never call live APIs. A script run by hand records them as plain response bodies ([ADR 0039](adr/0039-recorded-fixtures-are-response-bodies-from-a-script.md)); Gank Report's are the owner's own latest match, before and after its parse ([ADR 0040](adr/0040-fixtures-record-the-owners-own-match.md)). Each is trimmed to an allowlist of the fields the plug-in uses, and every match and account ID is replaced with a fake ([ADR 0041](adr/0041-fixtures-are-trimmed-to-an-allowlist-with-fake-ids.md)). A structural test fails if a fixture holds any other field or a real-looking ID ([ADR 0042](adr/0042-a-structural-test-checks-fixtures.md)).
 - **Mock upstream server:** a small service in the cluster that can return `429`s, slow responses, never-parsed matches and malformed payloads on demand. All drills point at it.
 - **Synthetic plug-in:** a plug-in whose job payload says what to do (sleep, wait, fail, crash, fan out, emit events). Disabled by default; enabled for end-to-end tests, drills and the load check.

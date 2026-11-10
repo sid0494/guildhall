@@ -65,6 +65,9 @@ class Schedule(ContractModel):
 class LinkedAccount(ContractModel):
     """Someone's account in the plug-in's source, linked with `/link`."""
 
+    id: PositiveInt
+    """The link's own ID: stable and not personal, so it can go in dedupe keys,
+    which appear in logs (docs/adr/0043)."""
     discord_user_id: NonEmptyStr
     external_id: NonEmptyStr
     """The account in the source, e.g. a Dota account ID."""

@@ -8,10 +8,12 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from guildhall.contract import SourcePlugin
+from guildhall.plugins.gank_report import GankReportPlugin
 from guildhall.plugins.synthetic import SyntheticPlugin
 
 CATALOGUE: Mapping[str, type[SourcePlugin]] = MappingProxyType(
     {
+        "gank_report": GankReportPlugin,
         "synthetic": SyntheticPlugin,
     }
 )

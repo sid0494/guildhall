@@ -1,23 +1,18 @@
 """Unit tests for the synthetic plug-in's payload-driven behaviour."""
 
 import asyncio
-from collections.abc import Sequence
-from typing import Any
 
 import pytest
+from fakes import no_io_context
 from pydantic import ValidationError
-from sqlalchemy import Row, Select
 from sqlalchemy.sql.dml import Insert
 
 from guildhall.contract import (
-    Context,
-    HttpResponse,
     Job,
     Outcome,
     PermanentError,
     RetryableError,
 )
-from guildhall.contract.http import Params
 from guildhall.plugins.synthetic import (
     NOT_READY_DELAY,
     SyntheticPlugin,
@@ -27,32 +22,6 @@ from guildhall.plugins.synthetic import (
 )
 
 
-class NoDatabase:
-    """`Context.db` for code that must not read: fails the test if it does."""
-
-    async def fetch(self, statement: Select[Any]) -> Sequence[Row[Any]]:
-        raise AssertionError("unexpected database read")
-
-
-class NoArchive:
-    """`Context.archive` for code that must not read archives."""
-
-    async def get(self, kind: str, id: str) -> bytes | None:
-        raise AssertionError("unexpected archive read")
-
-
-class NoHttp:
-    """`Context.http` for code that must not call upstream."""
-
-    async def get(self, url: str, *, params: Params | None = None) -> HttpResponse:
-        raise AssertionError("unexpected upstream call")
-
-    async def post(
-        self, url: str, *, params: Params | None = None, json: Any = None
-    ) -> HttpResponse:
-        raise AssertionError("unexpected upstream call")
-
-
 def run(work: SyntheticWork, attempt: int = 1) -> Outcome:
     job = Job[SyntheticWork](
         type="work",
@@ -60,11 +29,7 @@ def run(work: SyntheticWork, attempt: int = 1) -> Outcome:
         dedupe_key=f"synthetic:work:{work.work_id}",
         attempt=attempt,
     )
-    return asyncio.run(
-        SyntheticPlugin().work(
-            job, Context(db=NoDatabase(), archive=NoArchive(), http=NoHttp())
-        )
-    )
+    return asyncio.run(SyntheticPlugin().work(job, no_io_context()))
 
 
 def test_plain_work_finishes_with_no_output() -> None:

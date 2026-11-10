@@ -140,6 +140,7 @@ class Scheduler:
                 payload=ScheduledRun(
                     scheduled_for=tick,
                     account=LinkedAccount(
+                        id=row.id,
                         discord_user_id=row.discord_user_id,
                         external_id=row.external_id,
                     ),
