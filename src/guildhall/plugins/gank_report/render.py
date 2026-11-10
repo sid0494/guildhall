@@ -20,6 +20,13 @@ KIND: Final = {"normal": "Normal", "turbo": "Turbo"}
 EMOJI_WIDTH: Final = 2
 """Columns an emoji takes in Discord's monospace blocks; the header line,
 which has none, is indented by this much so its titles line up."""
+BETTER: Final = "🟢"
+WORSE: Final = "🔴"
+NEUTRAL: Final = "⚪"
+MARKER_WIDTH: Final = EMOJI_WIDTH + 1
+"""A colour (better or worse) and an arrow (the actual direction): colour
+alone fails red-green colour blindness, and an arrow alone confuses "down"
+with "worse" for deaths."""
 
 
 @dataclass(frozen=True)
@@ -84,22 +91,22 @@ def _row(metric: Metric, result: MetricResult) -> _Row:
         return _Row(metric, "—", "", "")  # e.g. no last hits at 10 in a short game
     shown = _number(result.value, metric.decimals)
     if result.baseline is None:
-        return _Row(metric, shown, "·", "first")
+        return _Row(metric, shown, NEUTRAL + "·", "first")
     average = _number(result.baseline, metric.decimals)
-    return _Row(metric, shown, _arrow(metric, shown, average, result), average)
+    return _Row(metric, shown, _marker(metric, shown, average, result), average)
 
 
 def _table(rows: list[_Row]) -> str:
-    """Aligned columns: emoji and label, your value, arrow, your average."""
+    """Aligned columns: emoji and label, your value, marker, your average."""
     label = max(len(row.metric.label) for row in rows)
     value = max(len("you"), *(len(row.value) for row in rows))
     average = max(len("avg"), *(len(row.average) for row in rows))
-    header = (
-        " " * (EMOJI_WIDTH + 1 + label + 2) + f"{'you':>{value}}     {'avg':>{average}}"
-    )
-    lines = [header.rstrip()] + [
+    indent = " " * (EMOJI_WIDTH + 1 + label + 2)
+    gap = " " * (2 + MARKER_WIDTH + 2)
+    header = f"{indent}{'you':>{value}}{gap}{'avg':>{average}}"
+    lines = [header] + [
         f"{row.metric.emoji} {row.metric.label:<{label}}  {row.value:>{value}}"
-        f"  {row.arrow or ' '}  {row.average:>{average}}".rstrip()
+        f"  {row.arrow}  {row.average:>{average}}".rstrip()
         for row in rows
     ]
     return "\n".join(lines)
@@ -112,12 +119,14 @@ def _duration(seconds: int | None) -> str:
     return f"{minutes}:{rest:02d}"
 
 
-def _arrow(metric: Metric, shown: str, average: str, result: MetricResult) -> str:
-    """Compared as displayed: equal-looking numbers are "same", never ▲ or ▼."""
+def _marker(metric: Metric, shown: str, average: str, result: MetricResult) -> str:
+    """Green for better, red for worse, with the actual direction: fewer
+    deaths is 🟢▼. Compared as displayed, so equal-looking numbers are ⚪─."""
     if shown == average or result.value is None or result.baseline is None:
-        return "─"
+        return NEUTRAL + "─"
     higher = result.value > result.baseline
-    return "▲" if higher == metric.higher_is_better else "▼"
+    colour = BETTER if higher == metric.higher_is_better else WORSE
+    return colour + ("▲" if higher else "▼")
 
 
 def _number(value: float, decimals: int) -> str:
