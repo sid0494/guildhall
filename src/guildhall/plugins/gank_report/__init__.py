@@ -24,6 +24,7 @@ from guildhall.contract import (
     RateLimitPolicy,
     SourcePlugin,
 )
+from guildhall.plugins.gank_report.modes import Mode, tracked_mode
 from guildhall.plugins.gank_report.opendota import (
     Match,
     Player,
@@ -86,6 +87,11 @@ class GankReportPlugin(SourcePlugin):
         match = parse(Match, response.body)
         if match.match_id != match_id:
             raise PermanentError("OpenDota answered with a different match")
+        mode = tracked_mode(match.game_mode, match.lobby_type, match.duration)
+        if mode is None:
+            # The poll never asks for one, so this is a bug or a changed rule;
+            # fail before spending calls on a parse.
+            raise PermanentError("match is not in a tracked mode")
 
         if not match.parsed and job.attempt <= len(PARSE_RETRY_DELAYS):
             # Best effort: an error here leaves the retry to ask again, and the
@@ -94,7 +100,7 @@ class GankReportPlugin(SourcePlugin):
             return Outcome(retry_in=PARSE_RETRY_DELAYS[job.attempt - 1])
 
         return Outcome(
-            writes=(_record_match(match),),
+            writes=(_record_match(match, mode),),
             archives=(
                 Archive(kind=MATCH_ARCHIVE_KIND, id=str(match_id), body=response.body),
             ),
@@ -132,13 +138,14 @@ def _dota_account_id(account: LinkedAccount) -> int:
     return int(account.external_id)
 
 
-def _record_match(match: Match) -> Insert:
+def _record_match(match: Match, mode: Mode) -> Insert:
     """Insert the match row, or update it if the match is fetched again."""
     values = {
         "played_at": match.played_at,
         "duration_seconds": match.duration,
         "game_mode": match.game_mode,
         "lobby_type": match.lobby_type,
+        "mode": mode.value,
         "parsed": match.parsed,
     }
     statement = insert(matches).values(match_id=match.match_id, **values)

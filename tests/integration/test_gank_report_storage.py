@@ -1,11 +1,13 @@
 """Gank Report's writes against real Postgres."""
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from fakes import DictArchive, FakeHttp, NoArchive, NoDatabase, NoHttp, response
 from record_opendota import FIXTURES_DIR, OWNER_FAKE_ACCOUNT_ID
-from sqlalchemy import delete, select
+from sqlalchemy import delete, insert, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -106,3 +108,38 @@ async def test_a_player_row_needs_its_match_row(
         await other.execute(delete(matches))
     with pytest.raises(IntegrityError, match="fk_gank_report_player_matches"):
         await run_writes(connection, outcome)
+
+
+async def column_default(connection: AsyncConnection, table: str, column: str) -> Any:
+    return await connection.scalar(
+        text(
+            "SELECT column_default FROM information_schema.columns"
+            " WHERE table_name = :table AND column_name = :column"
+        ),
+        {"table": table, "column": column},
+    )
+
+
+async def test_match_ids_come_from_opendota_never_a_sequence(
+    connection: AsyncConnection,
+) -> None:
+    assert await column_default(connection, "gank_report_matches", "match_id") is None
+
+
+async def test_postgres_refuses_a_mode_other_than_normal_or_turbo(
+    connection: AsyncConnection,
+) -> None:
+    # Alembic cannot detect check constraints, so the drift test cannot either.
+    row = {
+        "match_id": 1,
+        "played_at": datetime(2026, 11, 10, tzinfo=UTC),
+        "duration_seconds": 1800,
+        "game_mode": 1,
+        "lobby_type": 0,
+        "parsed": False,
+    }
+    await connection.execute(insert(matches).values({**row, "mode": "turbo"}))
+    with pytest.raises(IntegrityError, match="ck_gank_report_matches_mode"):
+        await connection.execute(
+            insert(matches).values({**row, "match_id": 2, "mode": "casual"})
+        )
