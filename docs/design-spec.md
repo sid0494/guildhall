@@ -191,7 +191,7 @@ A match is fetched once, whoever played in it; each linked account in it is then
 
 Matches are tracked as one of two kinds, which reports never mix: **normal** (ranked and unranked together: the balanced draft modes in unranked, ranked and Battle Cup lobbies) and **Turbo**, whose economy and pace differ. Other modes, private and tournament lobbies, bot games and games shorter than five minutes are not tracked ([ADR 0051](adr/0051-tracked-modes-normal-and-turbo.md)).
 
-- **Post-match:** an embed headed by the hero's icon and name ([ADR 0070](adr/0070-hero-table-with-icon-paths.md)), the result, duration and kind, and each focus metric with an arrow against my rolling average on that hero in the same kind ([ADR 0071](adr/0071-match-report-layout.md)).
+- **Post-match:** an embed headed by the hero's icon and name ([ADR 0070](adr/0070-hero-table-with-icon-paths.md)), the result, duration and kind, and a compact table of each focus metric with an arrow against my rolling average on that hero in the same kind ([ADR 0071](adr/0071-match-report-layout.md), [ADR 0074](adr/0074-compact-report-table.md)).
 - **Weekly (Sunday):** one section per kind I played at least one match of that week; in each, per focus metric, this week vs. the previous four, plus the best and worst game of the week.
 - **On demand:** `/match last` and `/trend [hero] [weeks]`.
 
