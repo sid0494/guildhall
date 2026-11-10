@@ -127,6 +127,21 @@ server's whole list. With the `synthetic` plug-in enabled, `/synthetic echo`
 (public) and `/synthetic whisper` (private) reply with your text. Each command
 runs as a job on the worker, so the worker must be up for replies to arrive.
 
+### Linking an account
+
+With `gank_report` in `GUILDHALL_PLUGINS`, register the commands again so
+Discord learns `/link`, then run `/link dota account:<your ID>` in your server
+(the ID from `opendota.com/players/<id>`, or your Steam ID). The reply is
+private. The worker then backfills your 100 newest matches, which shows in
+its log as `backfill`, `fetch_match` and, five minutes later, `analyze_match`
+jobs; the schedule polls for new matches every 15 minutes. To see what was
+stored:
+
+```sh
+docker compose exec postgres psql -U guildhall -d guildhall \
+  -c 'select count(*), count(*) filter (where parsed) as parsed from gank_report_matches'
+```
+
 ### Letting Discord in: the tunnel
 
 Discord calls the api over public HTTPS, so locally an ngrok agent forwards a
