@@ -39,6 +39,13 @@ class Player(OpenDotaModel):
     player_slot: int
     hero_id: int
     win: bool
+    gold_per_min: int
+    deaths: int
+    hero_damage: int
+    lh_t: list[int] | None = None
+    """Last hits at each minute, from minute 0; parsed matches only."""
+    obs_placed: int | None = None
+    """Parsed matches only."""
 
 
 class ListedMatch(OpenDotaModel):
