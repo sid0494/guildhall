@@ -27,14 +27,14 @@ MESSAGE_MAX_LENGTH = 2000
 
 
 class Message(ContractModel):
-    """A Discord message, as plug-ins describe it.
+    """A Discord message, as plug-ins describe it: a command's reply or a post.
 
-    `ephemeral` messages are seen only by the user who ran the command. More
-    fields (such as embeds) are added later without breaking plug-ins.
+    More fields (such as embeds) are added later without breaking plug-ins.
+    Who sees a reply is the command's choice (`Command.private`), not the
+    message's.
     """
 
     content: Annotated[str, Field(min_length=1, max_length=MESSAGE_MAX_LENGTH)]
-    ephemeral: bool = False
 
 
 class Invocation[O: BaseModel](ContractModel):
@@ -73,10 +73,13 @@ class Command[O: BaseModel]:
 
     `path` is the command's name: `("match", "last")` is `/match last`, at
     most two levels. `options` is a model whose fields become the command's
-    options; each field needs a `description` (docs/adr/0062).
+    options; each field needs a `description`. A `private` command's replies
+    are seen only by the user who ran it: Discord fixes that when the api
+    first answers, before the handler runs (docs/adr/0062).
     """
 
     path: tuple[str, ...]
     description: str
     options: type[O]
     handler: CommandHandler[O]
+    private: bool = False

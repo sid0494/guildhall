@@ -205,7 +205,7 @@ def test_a_scheduled_run_without_an_account_is_for_the_whole_plugin() -> None:
 
 
 def test_a_message_must_fit_discord() -> None:
-    assert Message(content="x" * 2000).ephemeral is False
+    assert Message(content="x" * 2000).content == "x" * 2000
     with pytest.raises(ValidationError):
         Message(content="x" * 2001)
     with pytest.raises(ValidationError):

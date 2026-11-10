@@ -76,10 +76,9 @@ class SyntheticWork(ContractModel):
 
 
 class EchoOptions(ContractModel):
-    """Options of `/synthetic echo`, a drill command."""
+    """Options of `/synthetic echo` and `/synthetic whisper`, drill commands."""
 
     text: str = Field(min_length=1, max_length=200, description="What to say back")
-    private: bool = Field(False, description="Only you see the reply")
 
 
 class WorkDone(Event):
@@ -101,17 +100,23 @@ class SyntheticPlugin(SourcePlugin):
 
     def commands(self) -> list[Command[Any]]:
         return [
-            Command(("synthetic", "echo"), "Say something back", EchoOptions, self.echo)
+            Command(
+                ("synthetic", "echo"), "Say something back", EchoOptions, self.echo
+            ),
+            Command(
+                ("synthetic", "whisper"),
+                "Say something back, only to you",
+                EchoOptions,
+                self.echo,
+                private=True,
+            ),
         ]
 
     async def echo(
         self, invocation: Invocation[EchoOptions], ctx: Context
     ) -> CommandOutcome:
         """Replies with the text: exercises commands end to end."""
-        options = invocation.options
-        return CommandOutcome(
-            reply=Message(content=options.text, ephemeral=options.private)
-        )
+        return CommandOutcome(reply=Message(content=invocation.options.text))
 
     async def work(self, job: Job[SyntheticWork], ctx: Context) -> Outcome:
         work = job.payload

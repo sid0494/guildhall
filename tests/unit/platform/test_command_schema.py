@@ -207,4 +207,4 @@ def test_the_dry_run_prints_the_enabled_plugins_commands(
     register_commands_main()
     printed = json.loads(capsys.readouterr().out)
     assert [command["name"] for command in printed] == ["synthetic"]
-    assert [sub["name"] for sub in printed[0]["options"]] == ["echo"]
+    assert [sub["name"] for sub in printed[0]["options"]] == ["echo", "whisper"]
