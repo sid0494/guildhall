@@ -110,6 +110,23 @@ docker compose logs -f api              # follow the api's log
 On the host instead: `uv run guildhall-api` (stop the container first; both
 use port 8000).
 
+### Slash commands
+
+Commands appear in Discord once registered with your test server. Set
+`GUILDHALL_DISCORD_APPLICATION_ID`, `GUILDHALL_DISCORD_GUILD_ID` and
+`GUILDHALL_DISCORD_BOT_TOKEN` (a secret) in `.env`; the application must be
+installed in the server with the `applications.commands` scope.
+
+```sh
+uv run guildhall-register-commands --dry-run   # print what Discord would receive
+uv run guildhall-register-commands             # make the server's commands match the enabled plug-ins
+```
+
+Run it again after adding, changing or removing a command: it overwrites the
+server's whole list. With the `synthetic` plug-in enabled, `/synthetic echo`
+(public) and `/synthetic whisper` (private) reply with your text. Each command
+runs as a job on the worker, so the worker must be up for replies to arrive.
+
 ### Letting Discord in: the tunnel
 
 Discord calls the api over public HTTPS, so locally an ngrok agent forwards a
