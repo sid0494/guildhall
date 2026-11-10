@@ -9,11 +9,14 @@ from sqlalchemy import Column, Integer, Table, delete, insert, select
 
 from guildhall.contract import (
     Archive,
+    CommandOutcome,
     ContractModel,
     Event,
+    Invocation,
     Job,
     JobSpec,
     LinkedAccount,
+    Message,
     Outcome,
     RateLimitPolicy,
     Schedule,
@@ -199,3 +202,30 @@ def test_a_scheduled_run_survives_the_queue_in_utc() -> None:
 
 def test_a_scheduled_run_without_an_account_is_for_the_whole_plugin() -> None:
     assert ScheduledRun(scheduled_for=datetime(2026, 11, 8, tzinfo=UTC)).account is None
+
+
+def test_a_message_must_fit_discord() -> None:
+    assert Message(content="x" * 2000).ephemeral is False
+    with pytest.raises(ValidationError):
+        Message(content="x" * 2001)
+    with pytest.raises(ValidationError):
+        Message(content="")
+
+
+def test_an_invocation_survives_the_queue_with_its_options() -> None:
+    class Options(ContractModel):
+        weeks: int = 4
+
+    invocation = Invocation[Options](
+        discord_user_id="user-1",
+        account=LinkedAccount(id=3, discord_user_id="user-1", external_id="42"),
+        options=Options(weeks=8),
+    )
+    back = Invocation[Options].model_validate_json(invocation.model_dump_json())
+    assert back == invocation
+    assert back.options.weeks == 8
+
+
+def test_a_command_outcome_needs_a_reply() -> None:
+    with pytest.raises(ValidationError, match="reply"):
+        CommandOutcome()  # type: ignore[call-arg]

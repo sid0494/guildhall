@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
 from guildhall.contract import SourcePlugin
-from guildhall.platform.checks import check_declarations
+from guildhall.platform.checks import check_command_owners, check_declarations
 
 
 class RegistryError(Exception):
@@ -27,8 +27,8 @@ def build_registry(
     """Instantiate and check each enabled plug-in, keyed by name.
 
     Raises RegistryError listing every problem: unknown or repeated names, a
-    catalogue entry whose plug-in reports a different name, and every failed
-    declaration check.
+    catalogue entry whose plug-in reports a different name, every failed
+    declaration check, and a top-level command declared by two plug-ins.
     """
     problems: list[str] = []
     plugins: dict[str, SourcePlugin] = {}
@@ -50,6 +50,11 @@ def build_registry(
         problems.extend(f"{name}: {problem}" for problem in check_declarations(plugin))
         plugins[name] = plugin
 
+    problems.extend(
+        check_command_owners(
+            {name: plugin.commands() for name, plugin in plugins.items()}
+        )
+    )
     if problems:
         raise RegistryError(problems)
     return MappingProxyType(plugins)
