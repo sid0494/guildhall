@@ -9,6 +9,7 @@ dependencies = [
     "botocore>=1.43.117",
     "cronsim>=2.8",
     "cryptography>=50.0.2",
+    "fastapi>=0.162.4",
     "httpx>=0.28.1",
     "limits>=5.8.0",
     "psycopg[binary]>=3.3.8",
@@ -17,10 +18,12 @@ dependencies = [
     "redis>=8.1.0",
     "sqlalchemy[asyncio]>=2.1.8",
     "structlog>=26.1.0",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
 guildhall-worker = "guildhall.bootstrap:worker_main"
+guildhall-api = "guildhall.bootstrap:api_main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14"]

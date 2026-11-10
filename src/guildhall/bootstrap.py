@@ -10,7 +10,9 @@ import sys
 from collections.abc import Mapping
 
 import structlog
+import uvicorn
 
+from guildhall.api.app import ApiSettings, create_app
 from guildhall.contract import SourcePlugin
 from guildhall.platform.archive import ArchiveSettings, open_archive
 from guildhall.platform.consumer import ConsumerSettings, JobConsumer
@@ -95,3 +97,20 @@ def worker_main() -> None:
     except Exception:
         _log.exception("worker failed")
         sys.exit(1)
+
+
+def api_main() -> None:
+    """The `guildhall-api` command: serve Discord's interactions endpoint.
+
+    Uvicorn's own logging setup is off, so its few lines go through ours as
+    JSON, and it writes no access log: the app logs what matters itself.
+    """
+    configure_logging(LogSettings())
+    settings = ApiSettings()
+    uvicorn.run(
+        create_app(settings),
+        host=settings.api_host,
+        port=settings.api_port,
+        log_config=None,
+        access_log=False,
+    )
