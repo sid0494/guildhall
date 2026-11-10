@@ -1,6 +1,7 @@
 """The contract suite: every check runs against every plug-in.
 
-Each plug-in supplies example payloads for its job types in `CASES`. A fake
+Each plug-in supplies examples for its job types in `CASES`: a payload, and
+the services its handler gets (by default, ones that fail if used). A fake
 platform runs each example the way the worker will: the payload makes a JSON
 round trip, is validated into its model, and the handler's outcome or error is
 checked with the platform's own contract checks.
@@ -10,25 +11,23 @@ import asyncio
 import importlib
 import inspect
 import pkgutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from sqlalchemy import Row, Select
+from fakes import no_io_context
 
 import guildhall.plugins
 from guildhall.contract import (
     Context,
     ContractModel,
-    HttpResponse,
     Job,
     Outcome,
     PermanentError,
     RetryableError,
     SourcePlugin,
 )
-from guildhall.contract.http import Params
 from guildhall.platform.checks import (
     check_declarations,
     check_outcome,
@@ -38,36 +37,22 @@ from guildhall.plugins import CATALOGUE
 from guildhall.plugins.synthetic import SyntheticPlugin, SyntheticWork
 
 
-class NoDatabase:
-    """`Context.db` for code that must not read: fails the test if it does."""
+@dataclass(frozen=True)
+class Example:
+    """One payload for a job type, the services its handler gets, and its attempt.
 
-    async def fetch(self, statement: Select[Any]) -> Sequence[Row[Any]]:
-        raise AssertionError("unexpected database read")
+    `context` is called for each run, so fakes that record calls start fresh.
+    """
 
-
-class NoArchive:
-    """`Context.archive` for code that must not read archives."""
-
-    async def get(self, kind: str, id: str) -> bytes | None:
-        raise AssertionError("unexpected archive read")
-
-
-class NoHttp:
-    """`Context.http` for code that must not call upstream."""
-
-    async def get(self, url: str, *, params: Params | None = None) -> HttpResponse:
-        raise AssertionError("unexpected upstream call")
-
-    async def post(
-        self, url: str, *, params: Params | None = None, json: Any = None
-    ) -> HttpResponse:
-        raise AssertionError("unexpected upstream call")
+    payload: ContractModel
+    context: Callable[[], Context] = no_io_context
+    attempt: int = 1
 
 
 @dataclass(frozen=True)
 class PluginCase:
     plugin: SourcePlugin
-    examples: Mapping[str, Sequence[ContractModel]]
+    examples: Mapping[str, Sequence[Example]]
 
 
 CASES = [
@@ -75,43 +60,39 @@ CASES = [
         SyntheticPlugin(),
         {
             "work": [
-                SyntheticWork(work_id="plain"),
-                SyntheticWork(work_id="busy", fan_out=3, emit_events=2),
-                SyntheticWork(work_id="kept", record=True),
-                SyntheticWork(work_id="archived.1", archive=True),
-                SyntheticWork(work_id="waiting", not_ready_for=1),
-                SyntheticWork(work_id="flaky", fail="retryable"),
-                SyntheticWork(work_id="doomed", fail="permanent"),
+                Example(SyntheticWork(work_id="plain")),
+                Example(SyntheticWork(work_id="busy", fan_out=3, emit_events=2)),
+                Example(SyntheticWork(work_id="kept", record=True)),
+                Example(SyntheticWork(work_id="archived.1", archive=True)),
+                Example(SyntheticWork(work_id="waiting", not_ready_for=1)),
+                Example(SyntheticWork(work_id="flaky", fail="retryable")),
+                Example(SyntheticWork(work_id="doomed", fail="permanent")),
             ]
         },
     ),
 ]
 
 EXAMPLES = [
-    pytest.param(case, job_type, payload, id=f"{case.plugin.name}-{job_type}-{i}")
+    pytest.param(case, job_type, example, id=f"{case.plugin.name}-{job_type}-{i}")
     for case in CASES
-    for job_type, payloads in case.examples.items()
-    for i, payload in enumerate(payloads)
+    for job_type, examples in case.examples.items()
+    for i, example in enumerate(examples)
 ]
 
 
-def run_job(
-    plugin: SourcePlugin, job_type_name: str, payload: ContractModel
-) -> Outcome:
+def run_job(plugin: SourcePlugin, job_type_name: str, example: Example) -> Outcome:
     """Run one job as the worker would, after a JSON round trip of the payload."""
     job_type = job_types_by_name(plugin)[job_type_name]
-    validated = job_type.payload_model.model_validate_json(payload.model_dump_json())
+    validated = job_type.payload_model.model_validate_json(
+        example.payload.model_dump_json()
+    )
     job = Job[Any](
         type=job_type_name,
         payload=validated,
         dedupe_key=f"{plugin.name}:contract-suite",
-        attempt=1,
+        attempt=example.attempt,
     )
-    return asyncio.run(
-        job_type.handler(
-            job, Context(db=NoDatabase(), archive=NoArchive(), http=NoHttp())
-        )
-    )
+    return asyncio.run(job_type.handler(job, example.context()))
 
 
 def discovered_plugin_classes() -> set[type[SourcePlugin]]:
@@ -151,24 +132,24 @@ def test_declarations_satisfy_the_contract(case: PluginCase) -> None:
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.plugin.name)
 def test_every_job_type_has_an_example(case: PluginCase) -> None:
     declared = set(job_types_by_name(case.plugin))
-    with_examples = {name for name, payloads in case.examples.items() if payloads}
+    with_examples = {name for name, examples in case.examples.items() if examples}
     assert declared == with_examples
 
 
-@pytest.mark.parametrize(("case", "job_type", "payload"), EXAMPLES)
+@pytest.mark.parametrize(("case", "job_type", "example"), EXAMPLES)
 def test_example_matches_its_payload_model(
-    case: PluginCase, job_type: str, payload: ContractModel
+    case: PluginCase, job_type: str, example: Example
 ) -> None:
     model = job_types_by_name(case.plugin)[job_type].payload_model
-    assert type(payload) is model
+    assert type(example.payload) is model
 
 
-@pytest.mark.parametrize(("case", "job_type", "payload"), EXAMPLES)
+@pytest.mark.parametrize(("case", "job_type", "example"), EXAMPLES)
 def test_example_outcome_satisfies_the_contract(
-    case: PluginCase, job_type: str, payload: ContractModel
+    case: PluginCase, job_type: str, example: Example
 ) -> None:
     try:
-        outcome = run_job(case.plugin, job_type, payload)
+        outcome = run_job(case.plugin, job_type, example)
     except RetryableError, PermanentError:
         return
     assert check_outcome(case.plugin, outcome) == []

@@ -50,13 +50,14 @@ plugins = ["pydantic.mypy"]
 files = ["src", "tests", "migrations", "scripts"]
 warn_unreachable = true
 enable_error_code = ["ignore-without-code"]
-mypy_path = ["src", "scripts"]
+mypy_path = ["src", "scripts", "tests/support"]
 explicit_package_bases = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Tests import development scripts, such as the fixture recorder, by name.
-pythonpath = ["scripts"]
+# Tests import development scripts, such as the fixture recorder, and the shared
+# test support in tests/support (such as `fakes`) by name.
+pythonpath = ["scripts", "tests/support"]
 # End-to-end tests need their own stack, so they run only when asked for
 # (`make test-e2e`); a later -m on the command line replaces this one.
 addopts = [
