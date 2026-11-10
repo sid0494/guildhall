@@ -9,7 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -17,6 +17,8 @@ from sqlalchemy import delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from guildhall.contract import (
+    Accepted,
+    AccountLink,
     Archive,
     Command,
     CommandOutcome,
@@ -26,10 +28,13 @@ from guildhall.contract import (
     Job,
     JobSpec,
     JobType,
+    LinkedAccount,
+    LinkRequest,
     Message,
     Outcome,
     PermanentError,
     RateLimitPolicy,
+    Rejected,
     RetryableError,
     SourcePlugin,
 )
@@ -868,3 +873,148 @@ async def test_a_failing_command_replies_with_an_error_only_on_its_last_receive(
     assert result.status is Status.RETRYING  # SQS dead-letters it after this
     [reply] = await queued_replies(engine, run_id)
     assert reply.message == {"content": COMMAND_FAILED}
+
+
+# /link (docs/adr/0066).
+
+
+class Linking(SourcePlugin):
+    """Links "game" accounts: digits only; remembers what verify was shown."""
+
+    name = "linking"
+    rate_limit = RateLimitPolicy(per_minute=60, per_day=1000)
+    seen_previous: ClassVar[list[str | None]] = []
+
+    def job_types(self) -> list[JobType[Any]]:
+        return [JobType("backfill", LinkedAccount, self.backfill)]
+
+    async def backfill(self, job: Job[LinkedAccount], ctx: Context) -> Outcome:
+        return Outcome()
+
+    def account_link(self) -> AccountLink | None:
+        return AccountLink("game", "Your game ID", self.verify, on_link="backfill")
+
+    async def verify(self, request: LinkRequest, ctx: Context) -> Accepted | Rejected:
+        previous = request.previous
+        self.seen_previous.append(previous.external_id if previous else None)
+        if not request.external_id.isdecimal():
+            return Rejected(reason="That is not a game ID.")
+        return Accepted(external_id=str(int(request.external_id)))
+
+
+@pytest.fixture
+def link_runner(
+    engine: AsyncEngine,
+    queue: FakeQueue,
+    archive: FakeArchive,
+    http: UpstreamHttp,
+    cleanup: None,
+    replies: None,
+) -> JobRunner:
+    Linking.seen_previous.clear()
+    return JobRunner(
+        {"linking": Linking()}, engine, queue, archive, http, RunnerSettings()
+    )
+
+
+@pytest.fixture
+async def user(engine: AsyncEngine, run_id: str) -> AsyncIterator[str]:
+    discord_user = f"user-{run_id}"
+    yield discord_user
+    async with engine.begin() as connection:
+        await connection.execute(
+            delete(linked_accounts).where(
+                linked_accounts.c.discord_user_id == discord_user
+            )
+        )
+
+
+def link(run_id: str, user: str, account: str) -> str:
+    return command(
+        run_id,
+        path=("link", "game"),
+        options={"account": account},
+        plugin="linking",
+        user=user,
+    )
+
+
+async def links_of(engine: AsyncEngine, user: str) -> list[Any]:
+    async with engine.connect() as connection:
+        rows = await connection.execute(
+            select(linked_accounts).where(linked_accounts.c.discord_user_id == user)
+        )
+        return list(rows)
+
+
+async def follow_ups(engine: AsyncEngine, run_id: str) -> list[Any]:
+    async with engine.connect() as connection:
+        rows = await connection.execute(
+            select(outbox_jobs.c.dedupe_key, outbox_jobs.c.body).where(
+                outbox_jobs.c.dedupe_key.contains(
+                    f"linking:on_link:interaction-{run_id}"
+                )
+            )
+        )
+        return list(rows)
+
+
+async def test_an_accepted_account_is_linked_followed_up_and_confirmed(
+    link_runner: JobRunner, engine: AsyncEngine, run_id: str, user: str
+) -> None:
+    assert await link_runner.run(message(link(run_id, user, " 0042 "))) == RunResult(
+        Status.DONE
+    )
+    [stored] = await links_of(engine, user)
+    assert (stored.plugin, stored.external_id) == ("linking", "42")  # normalised
+    [job] = await follow_ups(engine, run_id)
+    assert job.body["type"] == "backfill"
+    assert job.body["payload"] == {
+        "id": stored.id,
+        "discord_user_id": user,
+        "external_id": "42",
+    }
+    [reply] = await queued_replies(engine, run_id)
+    assert reply.message == {"content": "Linked your game account 42."}
+    assert Linking.seen_previous == [None]
+
+
+async def test_a_rejected_account_changes_nothing_but_says_why(
+    link_runner: JobRunner, engine: AsyncEngine, run_id: str, user: str
+) -> None:
+    assert await link_runner.run(message(link(run_id, user, "abc"))) == RunResult(
+        Status.DONE
+    )
+    assert await links_of(engine, user) == []
+    assert await follow_ups(engine, run_id) == []
+    [reply] = await queued_replies(engine, run_id)
+    assert reply.message == {"content": "That is not a game ID."}
+
+
+async def test_linking_again_replaces_the_account_and_follows_up_again(
+    link_runner: JobRunner, engine: AsyncEngine, run_id: str, user: str
+) -> None:
+    await link_runner.run(message(link(run_id, user, "42")))
+    [first] = await links_of(engine, user)
+    again = f"{run_id}-again"
+    assert await link_runner.run(message(link(again, user, "77"))) == RunResult(
+        Status.DONE
+    )
+    [second] = await links_of(engine, user)
+    assert (second.id, second.external_id) == (first.id, "77")  # same link, new account
+    assert second.linked_at >= first.linked_at
+    assert len(await follow_ups(engine, again)) == 1
+    [reply] = await queued_replies(engine, again)
+    assert reply.message == {"content": "Linked your game account 77, replacing 42."}
+    assert Linking.seen_previous == [None, "42"]
+
+
+async def test_a_link_delivered_twice_links_follows_up_and_replies_once(
+    link_runner: JobRunner, engine: AsyncEngine, run_id: str, user: str
+) -> None:
+    body = link(run_id, user, "42")
+    assert await link_runner.run(message(body)) == RunResult(Status.DONE)
+    assert await link_runner.run(message(body)) == RunResult(Status.DUPLICATE)
+    assert len(await links_of(engine, user)) == 1
+    assert len(await follow_ups(engine, run_id)) == 1
+    assert len(await queued_replies(engine, run_id)) == 1

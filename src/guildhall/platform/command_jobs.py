@@ -40,6 +40,12 @@ class CommandJob(ContractModel):
     private: bool
 
 
+def on_link_key(command_key: str) -> str:
+    """The follow-up job's key for one `/link`: keyed by the invocation, so
+    linking again (another account, or the same one) runs it again."""
+    return command_key.replace(":command:", ":on_link:", 1)
+
+
 def command_type(path: tuple[str, ...]) -> str:
     return COMMAND_TYPE_PREFIX + ".".join(path)
 
