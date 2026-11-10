@@ -219,3 +219,36 @@ async def test_each_call_is_logged_without_the_query_string(
         }.items()
     )
     assert QUERY_VALUE not in str(log_lines())
+
+
+PATH_ID = "123456789"
+"""Stands in for a personal ID in a URL path, such as a Dota account ID."""
+
+
+async def test_numeric_path_segments_are_masked_in_the_log(
+    log_lines: Callable[[], list[dict[str, Any]]],
+) -> None:
+    h = harness(answer(200))
+    await h.http.get(f"https://api.example.test/api/players/{PATH_ID}/matches")
+    (line,) = [line for line in log_lines() if line["event"] == "upstream call"]
+    assert line["path"] == "/api/players/{n}/matches"
+    assert PATH_ID not in str(log_lines())
+
+
+async def test_numeric_path_segments_are_masked_in_errors() -> None:
+    with pytest.raises(RetryableError) as raised:
+        await harness(answer(500)).http.get(
+            f"https://api.example.test/api/players/{PATH_ID}/matches"
+        )
+    assert str(raised.value) == (
+        "GET api.example.test/api/players/{n}/matches answered 500"
+    )
+
+
+async def test_segments_that_are_not_all_digits_are_kept(
+    log_lines: Callable[[], list[dict[str, Any]]],
+) -> None:
+    h = harness(answer(200))
+    await h.http.get("https://api.example.test/v2/items/abc123/0x1f")
+    (line,) = [line for line in log_lines() if line["event"] == "upstream call"]
+    assert line["path"] == "/v2/items/abc123/0x1f"

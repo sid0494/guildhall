@@ -17,22 +17,40 @@ from guildhall.contract import (
     Context,
     ContractModel,
     Job,
+    JobSpec,
     JobType,
     LinkedAccount,
     Outcome,
     PermanentError,
     RateLimitPolicy,
+    Schedule,
+    ScheduledRun,
     SourcePlugin,
 )
+from guildhall.plugins.gank_report.modes import Mode, tracked_mode
 from guildhall.plugins.gank_report.opendota import (
     Match,
+    MatchList,
     Player,
     check_status,
     match_url,
     parse,
     parse_request_url,
+    player_matches_url,
 )
-from guildhall.plugins.gank_report.tables import matches, metadata, player_matches
+from guildhall.plugins.gank_report.tables import (
+    matches,
+    metadata,
+    player_matches,
+    polled_matches,
+)
+
+POLL_CRON: Final = "*/15 * * * *"
+POLL_PARAMS: Final = {"limit": 20, "date": 365, "significant": 0}
+"""The 20 newest matches of the past year, Turbo included: OpenDota's default
+filter would drop it, so the plug-in applies its own (docs/adr/0051, 0052)."""
+ANALYZE_DELAY: Final = timedelta(minutes=5)
+"""An analysis is queued this late, since its fetch is never done sooner."""
 
 PARSE_RETRY_DELAYS: Final = (timedelta(minutes=5), timedelta(minutes=10))
 """The waits after the first and second unparsed fetches. The attempt after
@@ -71,7 +89,54 @@ class GankReportPlugin(SourcePlugin):
         return [
             JobType("fetch_match", FetchMatch, self.fetch_match),
             JobType("analyze_match", AnalyzeMatch, self.analyze_match),
+            JobType("poll_matches", ScheduledRun, self.poll_matches),
         ]
+
+    def schedules(self) -> list[Schedule]:
+        return [Schedule(job_type="poll_matches", cron=POLL_CRON)]
+
+    async def poll_matches(self, job: Job[ScheduledRun], ctx: Context) -> Outcome:
+        """Queue a fetch and an analysis for each new tracked match of an account.
+
+        "New" means not yet in `gank_report_polled_matches` for the account;
+        the matches queued are added to it in the same transaction as their
+        jobs, so each is queued once (docs/adr/0052).
+        """
+        account = job.payload.account
+        if account is None:
+            raise PermanentError("poll_matches runs once per linked account")
+        account_id = _dota_account_id(account)
+        response = await ctx.http.get(
+            player_matches_url(account_id), params=POLL_PARAMS
+        )
+        check_status(response, "player")
+        listed = parse(MatchList, response.body).root
+        tracked = list(
+            dict.fromkeys(
+                match.match_id
+                for match in listed
+                if tracked_mode(match.game_mode, match.lobby_type, match.duration)
+            )
+        )
+        if not tracked:
+            return Outcome()
+
+        seen = await ctx.db.fetch(
+            select(polled_matches.c.match_id).where(
+                polled_matches.c.account_id == account_id,
+                polled_matches.c.match_id.in_(tracked),
+            )
+        )
+        already = {row.match_id for row in seen}
+        new = [match_id for match_id in tracked if match_id not in already]
+        if not new:
+            return Outcome()
+        return Outcome(
+            writes=(_record_polled(account_id, new),),
+            jobs=tuple(
+                spec for match_id in new for spec in _jobs_for(match_id, account)
+            ),
+        )
 
     async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
         """Fetch the match; while it is unparsed, ask for a parse and wait.
@@ -86,6 +151,11 @@ class GankReportPlugin(SourcePlugin):
         match = parse(Match, response.body)
         if match.match_id != match_id:
             raise PermanentError("OpenDota answered with a different match")
+        mode = tracked_mode(match.game_mode, match.lobby_type, match.duration)
+        if mode is None:
+            # The poll never asks for one, so this is a bug or a changed rule;
+            # fail before spending calls on a parse.
+            raise PermanentError("match is not in a tracked mode")
 
         if not match.parsed and job.attempt <= len(PARSE_RETRY_DELAYS):
             # Best effort: an error here leaves the retry to ask again, and the
@@ -94,7 +164,7 @@ class GankReportPlugin(SourcePlugin):
             return Outcome(retry_in=PARSE_RETRY_DELAYS[job.attempt - 1])
 
         return Outcome(
-            writes=(_record_match(match),),
+            writes=(_record_match(match, mode),),
             archives=(
                 Archive(kind=MATCH_ARCHIVE_KIND, id=str(match_id), body=response.body),
             ),
@@ -126,19 +196,51 @@ class GankReportPlugin(SourcePlugin):
         return Outcome(writes=(_record_player(match_id, account_id, player),))
 
 
+def _jobs_for(match_id: int, account: LinkedAccount) -> tuple[JobSpec, JobSpec]:
+    """Fetch the match (once, whoever polls it) and analyse it for this account.
+
+    Keys carry the link's row ID, never the Dota account ID (docs/adr/0043).
+    """
+    return (
+        JobSpec(
+            type="fetch_match",
+            payload=FetchMatch(match_id=match_id),
+            dedupe_key=f"gank_report:match:{match_id}",
+        ),
+        JobSpec(
+            type="analyze_match",
+            payload=AnalyzeMatch(match_id=match_id, account=account),
+            dedupe_key=f"gank_report:analyze:{match_id}:{account.id}",
+            delay=ANALYZE_DELAY,
+        ),
+    )
+
+
+def _record_polled(account_id: int, match_ids: list[int]) -> Insert:
+    """Mark matches as queued; one already marked by an overlapping poll is kept."""
+    return (
+        insert(polled_matches)
+        .values(
+            [{"account_id": account_id, "match_id": match_id} for match_id in match_ids]
+        )
+        .on_conflict_do_nothing()
+    )
+
+
 def _dota_account_id(account: LinkedAccount) -> int:
     if not account.external_id.isdecimal():
         raise PermanentError("the linked account is not a Dota account ID")
     return int(account.external_id)
 
 
-def _record_match(match: Match) -> Insert:
+def _record_match(match: Match, mode: Mode) -> Insert:
     """Insert the match row, or update it if the match is fetched again."""
     values = {
         "played_at": match.played_at,
         "duration_seconds": match.duration,
         "game_mode": match.game_mode,
         "lobby_type": match.lobby_type,
+        "mode": mode.value,
         "parsed": match.parsed,
     }
     statement = insert(matches).values(match_id=match.match_id, **values)

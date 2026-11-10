@@ -4,7 +4,8 @@ Before each request, the plug-in's shared budget is checked. A short wait
 happens in place; a longer one, a `429` or an unreachable limiter raises
 `ThrottledError`, and the runner defers the job. Errors and log lines name the
 method, host and path only, never the query string or headers, which is where
-API keys go.
+API keys go; all-digit path segments, often personal IDs, are masked
+(docs/adr/0050).
 """
 
 import asyncio
@@ -82,7 +83,19 @@ def parse_retry_after(value: str | None, now: datetime | None = None) -> float |
 
 def describe(request: httpx.Request) -> str:
     """Method, host and path: never the query string, where keys go."""
-    return f"{request.method} {request.url.host}{request.url.path}"
+    return f"{request.method} {request.url.host}{masked_path(request.url)}"
+
+
+def masked_path(url: httpx.URL) -> str:
+    """The path with each all-digit segment as `{n}`.
+
+    Such segments are usually IDs, and some are personal, like the Dota account
+    in `/players/123456789/matches`. A job's log lines still carry its dedupe
+    key, which says what the call was for.
+    """
+    return "/".join(
+        "{n}" if segment.isdecimal() else segment for segment in url.path.split("/")
+    )
 
 
 class PluginHttp:
@@ -124,7 +137,7 @@ class PluginHttp:
             "upstream call",
             method=request.method,
             host=request.url.host,
-            path=request.url.path,
+            path=masked_path(request.url),
             status=response.status_code,
             duration_ms=round((time.monotonic() - started) * 1000),
         )

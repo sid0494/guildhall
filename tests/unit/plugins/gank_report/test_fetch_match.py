@@ -64,6 +64,7 @@ COLUMNS = {
     "duration_seconds",
     "game_mode",
     "lobby_type",
+    "mode",
     "parsed",
 }
 
@@ -84,6 +85,7 @@ async def test_a_parsed_match_is_archived_and_recorded_at_once() -> None:
         "duration_seconds": match["duration"],
         "game_mode": match["game_mode"],
         "lobby_type": match["lobby_type"],
+        "mode": "normal",  # unranked Single Draft
         "parsed": True,
     }
     # Fetching a match again updates its row instead of failing.
@@ -134,3 +136,24 @@ async def test_a_different_match_fails_permanently() -> None:
     http = opendota(response(other))
     with pytest.raises(PermanentError, match="different match"):
         await fetch(http)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"game_mode": 18}, {"lobby_type": 1}, {"duration": 120}],
+    ids=["ability-draft", "private-lobby", "two-minutes"],
+)
+async def test_an_untracked_match_fails_before_asking_for_a_parse(
+    change: dict[str, int],
+) -> None:
+    http = opendota(response(json.loads(UNPARSED) | change))
+    with pytest.raises(PermanentError, match="not in a tracked mode"):
+        await fetch(http)
+    assert http.calls == [Call("GET", MATCH_URL)]
+
+
+async def test_a_turbo_match_is_recorded_as_turbo() -> None:
+    turbo = json.loads(PARSED) | {"game_mode": 23, "lobby_type": 0}
+    outcome = await fetch(opendota(response(turbo)))
+    [write] = outcome.writes
+    assert written(write)["mode"] == "turbo"

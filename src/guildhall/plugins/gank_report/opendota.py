@@ -9,7 +9,7 @@ unparsed match a player who hides their match data has no `account_id`.
 from datetime import UTC, datetime
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, RootModel, ValidationError
 
 from guildhall.contract import HttpResponse, PermanentError
 
@@ -24,6 +24,10 @@ def parse_request_url(match_id: int) -> str:
     return f"{OPENDOTA_URL}/request/{match_id}"
 
 
+def player_matches_url(account_id: int) -> str:
+    return f"{OPENDOTA_URL}/players/{account_id}/matches"
+
+
 class OpenDotaModel(BaseModel):
     """Base for response models: immutable, unknown fields ignored."""
 
@@ -35,6 +39,21 @@ class Player(OpenDotaModel):
     player_slot: int
     hero_id: int
     win: bool
+
+
+class ListedMatch(OpenDotaModel):
+    """One entry of a player's match list."""
+
+    match_id: int
+    game_mode: int
+    lobby_type: int
+    duration: int
+
+
+class MatchList(RootModel[list[ListedMatch]]):
+    """A player's match list, newest first."""
+
+    model_config = ConfigDict(frozen=True)
 
 
 class OdData(OpenDotaModel):
@@ -65,7 +84,7 @@ class Match(OpenDotaModel):
         return next((p for p in self.players if p.account_id == account_id), None)
 
 
-def parse[M: OpenDotaModel](model: type[M], body: bytes) -> M:
+def parse[M: BaseModel](model: type[M], body: bytes) -> M:
     """Validate an OpenDota response body, or fail permanently.
 
     The same body fails the same way every time, so retrying cannot help. The

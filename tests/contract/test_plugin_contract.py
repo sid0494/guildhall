@@ -13,6 +13,7 @@ import inspect
 import pkgutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -38,6 +39,7 @@ from guildhall.contract import (
     Outcome,
     PermanentError,
     RetryableError,
+    ScheduledRun,
     SourcePlugin,
 )
 from guildhall.platform.checks import (
@@ -106,6 +108,18 @@ def fetched_and_archived(match_fixture: str | None) -> Callable[[], Context]:
     return context
 
 
+def opendota_listing_my_matches() -> Context:
+    """OpenDota serving the recorded match list; nothing polled yet."""
+    listed = (FIXTURES_DIR / "match_list.json").read_bytes()
+    url = f"https://api.opendota.com/api/players/{OWNER_FAKE_ACCOUNT_ID}/matches"
+    return Context(
+        db=RowsDatabase(),
+        archive=NoArchive(),
+        http=FakeHttp({("GET", url): response(listed)}),
+    )
+
+
+TICK = datetime(2026, 11, 10, 18, 0, tzinfo=UTC)
 ME = LinkedAccount(
     id=1, discord_user_id="user-1", external_id=str(OWNER_FAKE_ACCOUNT_ID)
 )
@@ -126,6 +140,13 @@ CASES = [
                     opendota_serving("match_unparsed.json"),
                     attempt=3,
                 ),
+            ],
+            "poll_matches": [
+                Example(
+                    ScheduledRun(scheduled_for=TICK, account=ME),
+                    opendota_listing_my_matches,
+                ),
+                Example(ScheduledRun(scheduled_for=TICK)),
             ],
             "analyze_match": [
                 Example(
