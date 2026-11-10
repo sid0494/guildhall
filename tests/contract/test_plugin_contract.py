@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from fakes import no_io_context
+from fakes import FakeHttp, NoArchive, NoDatabase, no_io_context, response
+from record_opendota import FIXTURES_DIR
 
 import guildhall.plugins
 from guildhall.contract import (
@@ -34,7 +35,7 @@ from guildhall.platform.checks import (
     job_types_by_name,
 )
 from guildhall.plugins import CATALOGUE
-from guildhall.plugins.gank_report import GankReportPlugin
+from guildhall.plugins.gank_report import FetchMatch, GankReportPlugin
 from guildhall.plugins.synthetic import SyntheticPlugin, SyntheticWork
 
 
@@ -56,8 +57,44 @@ class PluginCase:
     examples: Mapping[str, Sequence[Example]]
 
 
+def opendota_serving(match_fixture: str) -> Callable[[], Context]:
+    """A context whose OpenDota serves this recorded version of match 5001."""
+
+    def context() -> Context:
+        match = (FIXTURES_DIR / match_fixture).read_bytes()
+        parse_request = (FIXTURES_DIR / "parse_request.json").read_bytes()
+        http = FakeHttp(
+            {
+                ("GET", "https://api.opendota.com/api/matches/5001"): response(match),
+                ("POST", "https://api.opendota.com/api/request/5001"): response(
+                    parse_request
+                ),
+            }
+        )
+        return Context(db=NoDatabase(), archive=NoArchive(), http=http)
+
+    return context
+
+
 CASES = [
-    PluginCase(GankReportPlugin(), {}),
+    PluginCase(
+        GankReportPlugin(),
+        {
+            "fetch_match": [
+                Example(
+                    FetchMatch(match_id=5001), opendota_serving("match_parsed.json")
+                ),
+                Example(
+                    FetchMatch(match_id=5001), opendota_serving("match_unparsed.json")
+                ),
+                Example(
+                    FetchMatch(match_id=5001),
+                    opendota_serving("match_unparsed.json"),
+                    attempt=3,
+                ),
+            ],
+        },
+    ),
     PluginCase(
         SyntheticPlugin(),
         {
