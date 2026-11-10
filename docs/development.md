@@ -128,6 +128,10 @@ docker compose up -d --wait         # integration tests need the compose service
 uv run pytest -m integration        # ...then run them (CI runs them in their own job)
 ```
 
+Tests import shared fakes of a handler's services (`Context.db`, `.archive`,
+`.http`) from [`tests/support/fakes.py`](../tests/support/fakes.py) as
+`fakes`; reach for those before writing a new fake.
+
 Pre-commit skips integration tests so committing doesn't need Docker running;
 CI always runs them. Integration tests use their own `guildhall_test` database
 on the compose Postgres, created and migrated automatically, so they never touch
