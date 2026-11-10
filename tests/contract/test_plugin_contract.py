@@ -10,6 +10,7 @@ checked with the platform's own contract checks.
 import asyncio
 import importlib
 import inspect
+import json
 import pkgutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from fakes import (
     NoDatabase,
     NoHttp,
     RowsDatabase,
+    ScriptedDatabase,
     no_io_context,
     response,
 )
@@ -99,8 +101,9 @@ def fetched_and_archived(match_fixture: str | None) -> Callable[[], Context]:
         if match_fixture is None:
             return Context(db=RowsDatabase(), archive=NoArchive(), http=NoHttp())
         body = (FIXTURES_DIR / match_fixture).read_bytes()
+        baselines = [SimpleNamespace(metric="gpm", average=450.0, games=3)]
         return Context(
-            db=RowsDatabase(rows=[SimpleNamespace(match_id=5001)]),
+            db=ScriptedDatabase([SimpleNamespace(mode="normal")], baselines),
             archive=DictArchive({("match", "5001"): body}),
             http=NoHttp(),
         )
@@ -120,13 +123,22 @@ def opendota_listing_my_matches() -> Context:
 
 
 TICK = datetime(2026, 11, 10, 18, 0, tzinfo=UTC)
+
+
+def just_after_the_recorded_match() -> datetime:
+    """A clock an hour after match 5001 ended, so its analysis posts."""
+    match = json.loads((FIXTURES_DIR / "match_parsed.json").read_bytes())
+    ended = match["start_time"] + match["duration"]
+    return datetime.fromtimestamp(ended + 3600, UTC)
+
+
 ME = LinkedAccount(
     id=1, discord_user_id="user-1", external_id=str(OWNER_FAKE_ACCOUNT_ID)
 )
 
 CASES = [
     PluginCase(
-        GankReportPlugin(),
+        GankReportPlugin(clock=just_after_the_recorded_match),
         {
             "fetch_match": [
                 Example(

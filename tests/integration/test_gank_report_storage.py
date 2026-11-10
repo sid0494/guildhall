@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -22,8 +22,10 @@ from guildhall.contract import (
 )
 from guildhall.platform.storage import PluginDatabase
 from guildhall.plugins.gank_report import AnalyzeMatch, FetchMatch, GankReportPlugin
+from guildhall.plugins.gank_report.events import MatchAnalyzed
 from guildhall.plugins.gank_report.tables import (
     matches,
+    metrics,
     player_matches,
     polled_matches,
 )
@@ -77,6 +79,7 @@ async def fetched_match(engine: AsyncEngine) -> AsyncIterator[bytes]:
         await run_writes(connection, outcome)
     yield outcome.archives[0].body
     async with engine.begin() as connection:
+        await connection.execute(delete(metrics))
         await connection.execute(delete(player_matches))
         await connection.execute(delete(matches))
 
@@ -209,3 +212,117 @@ async def test_overlapping_polls_mark_each_match_once(
     await run_writes(connection, outcome)  # a second poll that read before the first
     rows = (await connection.execute(select(polled_matches.c.match_id))).all()
     assert sorted(row.match_id for row in rows) == sorted(LISTED_IDS)
+
+
+ME_ID = OWNER_FAKE_ACCOUNT_ID
+HERO = 42  # my hero in the recorded match
+RECORDED = json.loads((FIXTURES_DIR / "match_parsed.json").read_bytes())
+RECORDED_AT = datetime.fromtimestamp(RECORDED["start_time"], UTC)
+
+
+def game(
+    match_id: int,
+    hours_before: float,
+    *,
+    gpm: float,
+    last_hits: float | None = None,
+    account_id: int = ME_ID,
+    hero_id: int = HERO,
+    mode: str = "normal",
+) -> list[tuple[Any, dict[str, Any] | list[dict[str, Any]]]]:
+    """Rows for one analysed game, played `hours_before` the recorded match."""
+    return [
+        (
+            matches,
+            {
+                "match_id": match_id,
+                "played_at": RECORDED_AT - timedelta(hours=hours_before),
+                "duration_seconds": 1800,
+                "game_mode": 23 if mode == "turbo" else 22,
+                "lobby_type": 0 if mode == "turbo" else 7,
+                "mode": mode,
+                "parsed": last_hits is not None,
+            },
+        ),
+        (
+            player_matches,
+            {
+                "match_id": match_id,
+                "account_id": account_id,
+                "hero_id": hero_id,
+                "player_slot": 0,
+                "won": True,
+            },
+        ),
+        (
+            metrics,
+            [
+                {
+                    "match_id": match_id,
+                    "account_id": account_id,
+                    "metric": "gpm",
+                    "value": gpm,
+                },
+                {
+                    "match_id": match_id,
+                    "account_id": account_id,
+                    "metric": "last_hits_10",
+                    "value": last_hits,
+                },
+            ],
+        ),
+    ]
+
+
+@pytest.fixture
+async def history(engine: AsyncEngine, fetched_match: bytes) -> AsyncIterator[bytes]:
+    """22 earlier normal games of mine on the hero, plus games that must not count.
+
+    GPM is 1 for the oldest up to 22 for the most recent, so the 20 most recent
+    average 12.5. Only five of those have last hits at 10 (parsed).
+    """
+    rows = []
+    for n in range(1, 23):  # n = 22 is the most recent
+        parsed = n > 17
+        rows += game(
+            9000 + n, hours_before=23 - n, gpm=n, last_hits=40.0 + n if parsed else None
+        )
+    rows += game(9100, hours_before=-1, gpm=1000)  # after this match
+    rows += game(9101, hours_before=0.5, gpm=1000, mode="turbo")  # other kind
+    rows += game(9102, hours_before=0.5, gpm=1000, hero_id=HERO + 1)  # other hero
+    rows += game(9103, hours_before=0.5, gpm=1000, account_id=ME_ID + 1)  # not me
+    async with engine.begin() as connection:
+        for table, values in rows:
+            await connection.execute(insert(table), values)
+    yield fetched_match
+    async with engine.begin() as connection:
+        await connection.execute(delete(metrics))
+        await connection.execute(delete(player_matches))
+        await connection.execute(delete(matches))
+
+
+async def test_the_post_compares_with_my_last_20_games_on_the_hero_in_this_kind(
+    engine: AsyncEngine, history: bytes
+) -> None:
+    me = LinkedAccount(id=1, discord_user_id="user-1", external_id=str(ME_ID))
+    job = Job[AnalyzeMatch](
+        type="analyze_match",
+        payload=AnalyzeMatch(match_id=5001, account=me),
+        dedupe_key="gank_report:analyze:5001:1",
+        attempt=1,
+    )
+    plugin = GankReportPlugin(clock=lambda: RECORDED_AT + timedelta(hours=1))
+    context = Context(
+        db=PluginDatabase(engine, plugin),
+        archive=DictArchive({("match", "5001"): history}),
+        http=NoHttp(),
+    )
+    outcome = await plugin.analyze_match(job, context)
+    [event] = outcome.events
+    assert isinstance(event, MatchAnalyzed)
+    by_name = {m.name: m for m in event.metrics}
+    assert (by_name["gpm"].baseline, by_name["gpm"].baseline_games) == (12.5, 20)
+    # Last hits: only the five parsed games count, NULLs neither drag nor count.
+    assert by_name["last_hits_10"].baseline_games == 5
+    assert by_name["last_hits_10"].baseline == pytest.approx(40 + (18 + 22) / 2)
+    assert by_name["observer_wards"].baseline_games == 0

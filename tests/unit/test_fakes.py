@@ -3,7 +3,15 @@
 from typing import Any
 
 import pytest
-from fakes import Call, DictArchive, FakeHttp, RowsDatabase, no_io_context, response
+from fakes import (
+    Call,
+    DictArchive,
+    FakeHttp,
+    RowsDatabase,
+    ScriptedDatabase,
+    no_io_context,
+    response,
+)
 from sqlalchemy import Select, column, select
 
 URL = "https://upstream.example/items/1"
@@ -53,3 +61,14 @@ async def test_the_no_io_context_fails_on_any_use() -> None:
         await context.archive.get("match", "1")
     with pytest.raises(AssertionError, match="unexpected upstream call"):
         await context.http.get(URL)
+
+
+async def test_scripted_database_answers_reads_in_order_then_fails() -> None:
+    first, second = object(), object()
+    database = ScriptedDatabase([first], [second])
+    statement: Select[Any] = select(column("x"))
+    assert list(await database.fetch(statement)) == [first]
+    assert list(await database.fetch(statement)) == [second]
+    with pytest.raises(AssertionError, match="unexpected database read"):
+        await database.fetch(statement)
+    assert len(database.statements) == 3
