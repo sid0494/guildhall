@@ -13,17 +13,28 @@ import inspect
 import pkgutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fakes import FakeHttp, NoArchive, NoDatabase, no_io_context, response
-from record_opendota import FIXTURES_DIR
+from fakes import (
+    DictArchive,
+    FakeHttp,
+    NoArchive,
+    NoDatabase,
+    NoHttp,
+    RowsDatabase,
+    no_io_context,
+    response,
+)
+from record_opendota import FIXTURES_DIR, OWNER_FAKE_ACCOUNT_ID
 
 import guildhall.plugins
 from guildhall.contract import (
     Context,
     ContractModel,
     Job,
+    LinkedAccount,
     Outcome,
     PermanentError,
     RetryableError,
@@ -35,7 +46,7 @@ from guildhall.platform.checks import (
     job_types_by_name,
 )
 from guildhall.plugins import CATALOGUE
-from guildhall.plugins.gank_report import FetchMatch, GankReportPlugin
+from guildhall.plugins.gank_report import AnalyzeMatch, FetchMatch, GankReportPlugin
 from guildhall.plugins.synthetic import SyntheticPlugin, SyntheticWork
 
 
@@ -76,6 +87,29 @@ def opendota_serving(match_fixture: str) -> Callable[[], Context]:
     return context
 
 
+def fetched_and_archived(match_fixture: str | None) -> Callable[[], Context]:
+    """A context where match 5001 has been fetched, with this archived body.
+
+    None means not fetched yet: no row, and nothing archived.
+    """
+
+    def context() -> Context:
+        if match_fixture is None:
+            return Context(db=RowsDatabase(), archive=NoArchive(), http=NoHttp())
+        body = (FIXTURES_DIR / match_fixture).read_bytes()
+        return Context(
+            db=RowsDatabase(rows=[SimpleNamespace(match_id=5001)]),
+            archive=DictArchive({("match", "5001"): body}),
+            http=NoHttp(),
+        )
+
+    return context
+
+
+ME = LinkedAccount(
+    id=1, discord_user_id="user-1", external_id=str(OWNER_FAKE_ACCOUNT_ID)
+)
+
 CASES = [
     PluginCase(
         GankReportPlugin(),
@@ -91,6 +125,21 @@ CASES = [
                     FetchMatch(match_id=5001),
                     opendota_serving("match_unparsed.json"),
                     attempt=3,
+                ),
+            ],
+            "analyze_match": [
+                Example(
+                    AnalyzeMatch(match_id=5001, account=ME),
+                    fetched_and_archived("match_parsed.json"),
+                ),
+                Example(
+                    AnalyzeMatch(match_id=5001, account=ME),
+                    fetched_and_archived(None),
+                ),
+                Example(
+                    AnalyzeMatch(match_id=5001, account=ME),
+                    fetched_and_archived(None),
+                    attempt=24,
                 ),
             ],
         },
