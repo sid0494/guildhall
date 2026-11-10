@@ -34,4 +34,6 @@ class MatchAnalyzed(Event):
     mode: Literal["normal", "turbo"]
     parsed: bool
     played_at: datetime
+    duration_seconds: int | None = None
+    """Added within schema version 1, so events stored before it lack it."""
     metrics: tuple[MetricResult, ...]
