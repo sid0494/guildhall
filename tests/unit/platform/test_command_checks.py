@@ -134,3 +134,12 @@ def test_two_plugins_cannot_share_a_top_level_name() -> None:
         "/match is declared by more than one plug-in: commanding, other" in p
         for p in raised.value.problems
     )
+
+
+class Undescribed(ContractModel):
+    text: str
+
+
+def test_options_discord_cannot_express_are_reported() -> None:
+    found = problems(Command(("trend",), "Trend", Undescribed, reply))
+    assert any("'text' needs a description" in p for p in found)

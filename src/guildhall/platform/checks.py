@@ -27,6 +27,7 @@ from guildhall.contract import (
     SourcePlugin,
 )
 from guildhall.contract.storage import NAMING_CONVENTION
+from guildhall.platform.command_schema import OptionError, options_schema
 
 SUPPORTED_CONTRACT_VERSIONS = frozenset({1})
 
@@ -123,6 +124,10 @@ def _check_commands(commands: list[Command[Any]]) -> list[str]:
             problems.append(
                 f"command {name!r} options model must derive from ContractModel"
             )
+        try:
+            options_schema(command.options)
+        except OptionError as error:
+            problems.append(f"command {name!r}: {error}")
         if command.path in paths:
             problems.append(f"command {name!r} is declared more than once")
         paths.add(command.path)

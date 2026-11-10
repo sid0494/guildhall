@@ -4,7 +4,9 @@ The platform never imports plug-ins and plug-ins never import the platform;
 entry points such as the worker call these functions to join the two.
 """
 
+import argparse
 import asyncio
+import json
 import signal
 import sys
 from collections.abc import AsyncIterator, Mapping
@@ -17,8 +19,14 @@ from fastapi import FastAPI
 from guildhall.api.app import ApiSettings, create_app
 from guildhall.contract import SourcePlugin
 from guildhall.platform.archive import ArchiveSettings, open_archive
+from guildhall.platform.command_schema import commands_of, discord_commands
 from guildhall.platform.consumer import ConsumerSettings, JobConsumer
 from guildhall.platform.database import DatabaseSettings, create_engine
+from guildhall.platform.discord import (
+    DiscordSettings,
+    open_discord,
+    register_commands,
+)
 from guildhall.platform.http import HttpSettings, open_upstream_http
 from guildhall.platform.interactions import InteractionPruner, PostgresInteractionLog
 from guildhall.platform.logs import LogSettings, configure_logging
@@ -125,3 +133,29 @@ def api_main() -> None:
         log_config=None,
         access_log=False,
     )
+
+
+def register_commands_main() -> None:
+    """The `guildhall-register-commands` command (docs/adr/0065).
+
+    Makes the test server's slash commands match the enabled plug-ins'. With
+    `--dry-run`, prints what would be sent and calls nothing.
+    """
+    parser = argparse.ArgumentParser(description=register_commands_main.__doc__)
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the commands; call nothing"
+    )
+    arguments = parser.parse_args()
+    configure_logging(LogSettings())
+    commands = discord_commands(commands_of(load_plugins(Settings())))
+    if arguments.dry_run:
+        print(json.dumps(commands, indent=2))
+        return
+    settings = DiscordSettings()
+
+    async def register() -> int:
+        async with open_discord(settings) as client:
+            return await register_commands(client, settings, commands)
+
+    count = asyncio.run(register())
+    _log.info("commands registered", count=count)

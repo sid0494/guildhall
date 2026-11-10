@@ -537,6 +537,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiobotocore" },
     { name = "alembic" },
+    { name = "annotated-types" },
     { name = "botocore" },
     { name = "cronsim" },
     { name = "cryptography" },
@@ -567,6 +568,7 @@ dev = [
 requires-dist = [
     { name = "aiobotocore", specifier = ">=3.10.0" },
     { name = "alembic", specifier = ">=1.20.1" },
+    { name = "annotated-types", specifier = ">=0.8.0" },
     { name = "botocore", specifier = ">=1.43.117" },
     { name = "cronsim", specifier = ">=2.8" },
     { name = "cryptography", specifier = ">=50.0.2" },
