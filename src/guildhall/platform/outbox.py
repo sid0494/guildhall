@@ -59,6 +59,12 @@ outbox_events = Table(
     Column(
         "created_at", DateTime(timezone=True), nullable=False, server_default=func.now()
     ),
+    # Delivery to Discord (docs/adr/0072): pending while neither sent nor
+    # abandoned; an event rendered as nothing counts as sent, without a message.
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("sent_at", DateTime(timezone=True)),
+    Column("abandoned_at", DateTime(timezone=True)),
+    Column("discord_message_id", Text),
 )
 
 

@@ -7,6 +7,7 @@ User-Agent as `DiscordBot (<url>, <version>)`.
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from enum import Enum, auto
 from typing import Any, Final
 
 import httpx
@@ -42,14 +43,56 @@ class DiscordError(Exception):
 
 @asynccontextmanager
 async def open_discord(settings: DiscordSettings) -> AsyncIterator[httpx.AsyncClient]:
+    async with open_bot(settings.discord_bot_token) as client:
+        yield client
+
+
+@asynccontextmanager
+async def open_bot(token: SecretStr) -> AsyncIterator[httpx.AsyncClient]:
+    """A client that acts as the bot (for posts and registration)."""
     headers = {
-        "Authorization": f"Bot {settings.discord_bot_token.get_secret_value()}",
+        "Authorization": f"Bot {token.get_secret_value()}",
         "User-Agent": USER_AGENT,
     }
     async with httpx.AsyncClient(
         base_url=API_URL, headers=headers, timeout=10
     ) as client:
         yield client
+
+
+class Delivery(Enum):
+    """What to do after asking Discord to send something."""
+
+    SENT = auto()
+    GIVE_UP = auto()
+    """Discord refused it for good (4xx other than 429)."""
+    TRY_AGAIN = auto()
+    """Discord or the network failed (5xx, timeouts): worth another try."""
+    RATE_LIMITED = auto()
+    """Wait as long as Discord says, then go on."""
+
+
+def classify(response: httpx.Response) -> tuple[Delivery, Any]:
+    """The delivery outcome, and its detail: the status, or the wait for 429."""
+    if response.is_success:
+        return Delivery.SENT, response.status_code
+    if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
+        return Delivery.RATE_LIMITED, retry_after(response)
+    if response.status_code >= 500:
+        return Delivery.TRY_AGAIN, response.status_code
+    return Delivery.GIVE_UP, response.status_code
+
+
+def retry_after(response: httpx.Response) -> float:
+    """Discord's wait, from the body or the header; a second if neither."""
+    try:
+        return float(response.json()["retry_after"])
+    except ValueError, KeyError, TypeError:
+        pass
+    try:
+        return float(response.headers.get("retry-after", 1))
+    except ValueError:
+        return 1.0
 
 
 async def register_commands(
