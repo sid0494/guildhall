@@ -174,7 +174,7 @@ Some metrics need a replay-parsed match; the rest work from the basic match reco
 | Hero damage per minute | Fight impact | No |
 | Observer wards placed | Vision work as support | Yes |
 
-Metrics live in a registry of small functions (`match_json → value or missing`), so adding one is a single function and no schema change. Comparisons use a rolling window (default: my last 20 games on that hero).
+Metrics live in a registry of small functions (`(match, player) → value or None`) in `plugins/gank_report/metrics.py`, each with a label, which direction is better and whether it needs a parsed match; adding one is a function and a registry line, with no schema change. A metric is a value per match; comparisons happen when reports are built. Every analysed match gets a row per metric, `NULL` where the match gives no value, so a missing row means not yet computed ([ADR 0053](adr/0053-metric-registry-and-missing-values.md)). Comparisons use a rolling window: my last 20 earlier games on that hero, in the same kind (normal or Turbo), averaging only games with a value.
 
 ### Match pipeline
 
@@ -184,7 +184,7 @@ A match is fetched once, whoever played in it; each linked account in it is then
 2. `fetch_match` gets the full match. While it is unparsed, it requests a parse and waits 5, then 10 minutes; the third attempt finishes either way, so parsed-only metrics may be missing. Parsing usually takes 1–5 minutes, and some matches never parse ([ADR 0044](adr/0044-parse-retry-policy.md)).
 3. When it finishes, it archives the raw JSON to S3 and records the match row. Responses are read through models of just the fields used; an unexpected one fails permanently, naming fields but never values ([ADR 0047](adr/0047-opendota-response-models.md)).
 4. `analyze_match` waits, checking every 5 minutes for up to about two hours, until the match row exists; then it reads the archived match and records the account's part in it ([ADR 0046](adr/0046-analysis-waits-for-the-fetch.md)).
-5. Metrics are written to Postgres and a `gank_report.match_analyzed` event goes to the outbox (from B3).
+5. `analyze_match` writes every metric to Postgres. If the match ended within the last 12 hours, it also emits a `gank_report.match_analyzed` event: a snapshot of hero, result, kind and each metric with my baseline, since `render()` does no I/O ([ADR 0055](adr/0055-match-analyzed-is-a-snapshot.md)). Older matches (a first poll, a backfill, a recompute) are recorded without a post, and an event's key takes effect once, so re-analysing never posts twice ([ADR 0056](adr/0056-only-recent-matches-are-posted.md)).
 
 ### Reports
 
@@ -296,7 +296,7 @@ Platform tables are shared; each plug-in owns tables prefixed with its name. Raw
 | `gank_report_matches` | Gank Report | `match_id`, `played_at`, `duration_seconds`, `game_mode`, `lobby_type`, `mode` (`normal` or `turbo`), `parsed`, `fetched_at` | One row per match, written when its fetch is final ([ADR 0045](adr/0045-gank-report-tables.md), [ADR 0051](adr/0051-tracked-modes-normal-and-turbo.md)) |
 | `gank_report_polled_matches` | Gank Report | `account_id`, `match_id` (together the primary key), `polled_at` | Matches already queued per account ([ADR 0052](adr/0052-polls-queue-each-match-once.md)) |
 | `gank_report_player_matches` | Gank Report | `match_id`, `account_id` (Dota account; together the primary key), `hero_id`, `player_slot`, `won`, `analyzed_at` | One linked account's part in a match ([ADR 0045](adr/0045-gank-report-tables.md)) |
-| `gank_report_metrics` | Gank Report | `match_id`, `account_id`, `metric`, `value` | Long format, so new metrics need no migration |
+| `gank_report_metrics` | Gank Report | `match_id`, `account_id`, `metric` (together the primary key), `value` (nullable) | Long format, so new metrics need no migration ([ADR 0054](adr/0054-metrics-in-long-format.md)) |
 | `gank_report_focus` | Gank Report | `discord_user_id`, `metric` | Chosen skills |
 | `side_quest_games` | Side Quest | `appid`, `name`, `playtime_min`, `state`, `status_source` | Library and backlog state |
 | `side_quest_wishlist` | Side Quest | `appid`, `itad_id`, `target_price_cents` | What to watch |
@@ -432,7 +432,7 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 
 ### M2: Gank Report, local
 
-- [ ] `discover`, `fetch_match`, parse-retry, S3 archive, metric registry
+- [x] `poll_matches`, `fetch_match`, parse-retry, S3 archive, `analyze_match`, metric registry
 - [x] Per-plug-in rate limiter with backoff
 - [ ] Discord endpoint, `/link`, `/match last`, outbox dispatcher
 - [ ] api service in docker-compose
@@ -493,7 +493,7 @@ Pending decisions have no number until their record is written; the ADR column t
 | Outbound limiter fails closed when Redis is down | Fail closed | [0034](adr/0034-shared-rate-limits-in-redis.md) |
 | Redis in-cluster vs. ElastiCache | In-cluster | Pending |
 | Accept rare duplicate Discord posts on dispatcher crash | Accept | Pending |
-| Metrics stored long format vs. one column per metric | Long format | Pending |
+| Metrics stored long format vs. one column per metric | Long format | [0054](adr/0054-metrics-in-long-format.md) |
 
 ### Open questions
 
@@ -502,6 +502,7 @@ Pending decisions have no number until their record is written; the ADR column t
 - [ ] Does `GetWishlist` return enough to skip a separate store lookup? Check against a recorded response.
 - [ ] Where do time-to-beat estimates for `/next [hours]` come from, if anywhere?
 - [ ] Should weekly reports be skipped in weeks with fewer than 3 matches?
+- [ ] Is 12 hours the right window for posting a match? Games played during a longer outage get no post ([ADR 0056](adr/0056-only-recent-matches-are-posted.md)).
 
 ## References
 
