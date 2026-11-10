@@ -17,16 +17,21 @@ from typing import Any, Protocol
 import structlog
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from guildhall.contract import (
+    Accepted,
+    AccountLink,
     Context,
     Http,
     Invocation,
     Job,
+    JobSpec,
     LinkedAccount,
+    LinkRequest,
     Message,
     Outcome,
     PermanentError,
@@ -45,7 +50,14 @@ from guildhall.platform.checks import (
     check_outcome,
     job_types_by_name,
 )
-from guildhall.platform.command_jobs import CommandJob, commands_by_path, is_command
+from guildhall.platform.command_jobs import (
+    LINK_COMMAND,
+    CommandJob,
+    commands_by_path,
+    is_command,
+    on_link_key,
+)
+from guildhall.platform.command_schema import ACCOUNT_OPTION
 from guildhall.platform.dedupe import claim, processed_jobs
 from guildhall.platform.envelope import JobEnvelope
 from guildhall.platform.http import ThrottledError
@@ -332,6 +344,8 @@ class JobRunner:
         plugin: SourcePlugin,
         job: CommandJob,
     ) -> RunResult:
+        if job.path[:1] == (LINK_COMMAND,):
+            return await self._run_link(message, envelope, attempt, plugin, job)
         command = commands_by_path(plugin).get(job.path)
         if command is None:
             return await self._dead_letter(
@@ -374,6 +388,116 @@ class JobRunner:
             return await self._retry(message, f"database error: {type(error).__name__}")
         await self._queue.delete(message)
         return RunResult(Status.DONE if committed else Status.DUPLICATE)
+
+    async def _run_link(
+        self,
+        message: ReceivedMessage,
+        envelope: JobEnvelope,
+        attempt: int,
+        plugin: SourcePlugin,
+        job: CommandJob,
+    ) -> RunResult:
+        """`/link <kind> account:<id>` (docs/adr/0066): the plug-in checks the
+        account; the platform stores the link, queues the plug-in's follow-up
+        job and replies, all in one transaction."""
+        link = plugin.account_link()
+        if link is None or job.path[1:] != (link.kind,):
+            return await self._dead_letter(
+                message, f"unknown link /{' '.join(job.path)} for {plugin.name!r}"
+            )
+        try:
+            previous = await self._linked_account(plugin.name, job.discord_user_id)
+        except SQLAlchemyError as error:
+            return await self._retry(message, f"database error: {type(error).__name__}")
+        try:
+            request = LinkRequest(
+                discord_user_id=job.discord_user_id,
+                external_id=str(job.options.get(ACCOUNT_OPTION, "")).strip(),
+                previous=previous,
+            )
+        except ValidationError as error:
+            return await self._dead_letter(
+                message, f"invalid options: {describe(error)}"
+            )
+        context = Context(
+            db=PluginDatabase(self._engine, plugin),
+            archive=PluginArchive(self._archive, plugin),
+            http=self._http.for_plugin(plugin),
+        )
+        verdict = await self._invoke(
+            message, envelope, attempt, lambda: link.verify(request, context)
+        )
+        if isinstance(verdict, RunResult):
+            return verdict
+        try:
+            if isinstance(verdict, Accepted):
+                committed = await self._commit_link(
+                    plugin, envelope, job, link, verdict, previous
+                )
+            else:
+                reply = Reply(
+                    job.application_id,
+                    job.interaction_token,
+                    Message(content=verdict.reason),
+                )
+                committed = await self._commit(plugin, envelope, Outcome(), reply)
+        except SQLAlchemyError as error:
+            return await self._retry(message, f"database error: {type(error).__name__}")
+        await self._queue.delete(message)
+        return RunResult(Status.DONE if committed else Status.DUPLICATE)
+
+    async def _commit_link(
+        self,
+        plugin: SourcePlugin,
+        envelope: JobEnvelope,
+        job: CommandJob,
+        link: AccountLink,
+        accepted: Accepted,
+        previous: LinkedAccount | None,
+    ) -> bool:
+        """Claim, store the link (keeping its ID when replacing one), queue the
+        follow-up job with the stored account, and queue the reply."""
+        new_link = insert(linked_accounts).values(
+            plugin=plugin.name,
+            discord_user_id=job.discord_user_id,
+            external_id=accepted.external_id,
+        )
+        upsert = new_link.on_conflict_do_update(
+            index_elements=[
+                linked_accounts.c.plugin,
+                linked_accounts.c.discord_user_id,
+            ],
+            set_={
+                "external_id": new_link.excluded.external_id,
+                "linked_at": func.now(),
+            },
+        ).returning(linked_accounts.c.id)
+        async with self._engine.connect() as connection:
+            transaction = await connection.begin()
+            if not await claim(connection, envelope.dedupe_key):
+                await transaction.rollback()
+                return False
+            link_id = (await connection.execute(upsert)).scalar_one()
+            account = LinkedAccount(
+                id=link_id,
+                discord_user_id=job.discord_user_id,
+                external_id=accepted.external_id,
+            )
+            if link.on_link is not None:
+                follow_up = JobSpec(
+                    type=link.on_link,
+                    payload=account,
+                    dedupe_key=on_link_key(envelope.dedupe_key),
+                )
+                await add_jobs(connection, plugin.name, [follow_up])
+            await add_reply(
+                connection,
+                job.application_id,
+                job.interaction_token,
+                Message(content=_linked(link.kind, accepted, previous)),
+            )
+            await transaction.commit()
+            return True
 
     async def _invoke[T](
         self,
@@ -499,3 +623,12 @@ class JobRunner:
     async def _dead_letter(self, message: ReceivedMessage, reason: str) -> RunResult:
         await self._queue.dead_letter(message, reason)
         return RunResult(Status.DEAD_LETTERED, reason)
+
+
+def _linked(kind: str, accepted: Accepted, previous: LinkedAccount | None) -> str:
+    replaced = (
+        f", replacing {previous.external_id}"
+        if previous is not None and previous.external_id != accepted.external_id
+        else ""
+    )
+    return f"Linked your {kind} account {accepted.external_id}{replaced}."

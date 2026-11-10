@@ -154,7 +154,7 @@ async def _command(
         options=values,
         application_id=interaction.application_id,
         interaction_token=interaction.token,
-        private=route.command.private,
+        private=route.private,
     )
     try:
         first_time = await interaction_log.accept_command(
@@ -170,7 +170,7 @@ async def _command(
         command="/" + " ".join(path),
         plugin=route.plugin,
     )
-    return _json(deferred(route.command.private))
+    return _json(deferred(route.private))
 
 
 def _json(content: dict[str, Any], status_code: int = 200) -> JSONResponse:

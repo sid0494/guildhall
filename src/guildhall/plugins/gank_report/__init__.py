@@ -14,6 +14,8 @@ from sqlalchemy import Row, Select, func, select
 from sqlalchemy.dialects.postgresql import Insert, insert
 
 from guildhall.contract import (
+    Accepted,
+    AccountLink,
     Archive,
     Context,
     ContractModel,
@@ -21,13 +23,16 @@ from guildhall.contract import (
     JobSpec,
     JobType,
     LinkedAccount,
+    LinkRequest,
     Outcome,
     PermanentError,
     RateLimitPolicy,
+    Rejected,
     Schedule,
     ScheduledRun,
     SourcePlugin,
 )
+from guildhall.plugins.gank_report.account_ids import dota_account_id
 from guildhall.plugins.gank_report.events import MatchAnalyzed, MetricResult
 from guildhall.plugins.gank_report.metrics import METRICS
 from guildhall.plugins.gank_report.modes import Mode, tracked_mode
@@ -53,6 +58,20 @@ POLL_CRON: Final = "*/15 * * * *"
 POLL_PARAMS: Final = {"limit": 20, "date": 365, "significant": 0}
 """The 20 newest matches of the past year, Turbo included: OpenDota's default
 filter would drop it, so the plug-in applies its own (docs/adr/0051, 0052)."""
+BACKFILL_PARAMS: Final = {"limit": 100, "significant": 0}
+"""After `/link`: the 100 newest matches, however old (docs/adr/0067)."""
+VERIFY_PARAMS: Final = {"limit": 1, "significant": 0}
+REPLAY_LIFETIME: Final = timedelta(days=7)
+"""A match that ended longer ago than this is not worth asking OpenDota to
+parse: its replay is most likely gone (docs/adr/0067)."""
+NOT_AN_ACCOUNT = (
+    "That doesn't look like a Dota account ID or a Steam ID. Your account ID is"
+    " the number in your OpenDota profile's address: opendota.com/players/<id>."
+)
+NO_MATCHES_VISIBLE = (
+    "OpenDota can't see any matches for that account. Check that Expose Public"
+    " Match Data is on in Dota's settings, or play a match first."
+)
 ANALYZE_DELAY: Final = timedelta(minutes=5)
 """An analysis is queued this late, since its fetch is never done sooner."""
 POST_WINDOW: Final = timedelta(hours=12)
@@ -102,7 +121,43 @@ class GankReportPlugin(SourcePlugin):
             JobType("fetch_match", FetchMatch, self.fetch_match),
             JobType("analyze_match", AnalyzeMatch, self.analyze_match),
             JobType("poll_matches", ScheduledRun, self.poll_matches),
+            JobType("backfill", LinkedAccount, self.backfill),
         ]
+
+    def account_link(self) -> AccountLink | None:
+        return AccountLink(
+            kind="dota",
+            description="Your Dota account ID (opendota.com/players/<id>) or Steam ID",
+            verify=self.verify_account,
+            on_link="backfill",
+        )
+
+    async def verify_account(
+        self, request: LinkRequest, ctx: Context
+    ) -> Accepted | Rejected:
+        """Accept an account OpenDota can see matches for (docs/adr/0067).
+
+        OpenDota answers with a profile even for IDs that cannot exist, so the
+        test is the one that matters to Gank Report: a visible match.
+        """
+        account_id = dota_account_id(request.external_id)
+        if account_id is None:
+            return Rejected(reason=NOT_AN_ACCOUNT)
+        response = await ctx.http.get(
+            player_matches_url(account_id), params=VERIFY_PARAMS
+        )
+        check_status(response, "player")
+        if not parse(MatchList, response.body).root:
+            return Rejected(reason=NO_MATCHES_VISIBLE)
+        return Accepted(external_id=str(account_id))
+
+    async def backfill(self, job: Job[LinkedAccount], ctx: Context) -> Outcome:
+        """After `/link`: queue the account's 100 newest tracked matches.
+
+        The same as a poll with a wider net; matches a poll already queued are
+        skipped, and old ones are recorded without waiting for a parse.
+        """
+        return await _queue_new_matches(job.payload, ctx, BACKFILL_PARAMS)
 
     def schedules(self) -> list[Schedule]:
         return [Schedule(job_type="poll_matches", cron=POLL_CRON)]
@@ -117,38 +172,7 @@ class GankReportPlugin(SourcePlugin):
         account = job.payload.account
         if account is None:
             raise PermanentError("poll_matches runs once per linked account")
-        account_id = _dota_account_id(account)
-        response = await ctx.http.get(
-            player_matches_url(account_id), params=POLL_PARAMS
-        )
-        check_status(response, "player")
-        listed = parse(MatchList, response.body).root
-        tracked = list(
-            dict.fromkeys(
-                match.match_id
-                for match in listed
-                if tracked_mode(match.game_mode, match.lobby_type, match.duration)
-            )
-        )
-        if not tracked:
-            return Outcome()
-
-        seen = await ctx.db.fetch(
-            select(polled_matches.c.match_id).where(
-                polled_matches.c.account_id == account_id,
-                polled_matches.c.match_id.in_(tracked),
-            )
-        )
-        already = {row.match_id for row in seen}
-        new = [match_id for match_id in tracked if match_id not in already]
-        if not new:
-            return Outcome()
-        return Outcome(
-            writes=(_record_polled(account_id, new),),
-            jobs=tuple(
-                spec for match_id in new for spec in _jobs_for(match_id, account)
-            ),
-        )
+        return await _queue_new_matches(account, ctx, POLL_PARAMS)
 
     async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
         """Fetch the match; while it is unparsed, ask for a parse and wait.
@@ -169,7 +193,13 @@ class GankReportPlugin(SourcePlugin):
             # fail before spending calls on a parse.
             raise PermanentError("match is not in a tracked mode")
 
-        if not match.parsed and job.attempt <= len(PARSE_RETRY_DELAYS):
+        ended = match.played_at + timedelta(seconds=match.duration)
+        worth_parsing = self._clock() - ended <= REPLAY_LIFETIME
+        if (
+            not match.parsed
+            and worth_parsing
+            and job.attempt <= len(PARSE_RETRY_DELAYS)
+        ):
             # Best effort: an error here leaves the retry to ask again, and the
             # last attempt records the match unparsed anyway.
             await ctx.http.post(parse_request_url(match_id))
@@ -232,6 +262,42 @@ class GankReportPlugin(SourcePlugin):
             metrics=_results(values, averages),
         )
         return Outcome(writes=writes, events=(event,))
+
+
+async def _queue_new_matches(
+    account: LinkedAccount, ctx: Context, params: Mapping[str, int]
+) -> Outcome:
+    """Queue a fetch and an analysis for each tracked match in the account's
+    list that is not yet polled for it, marking them polled in the same
+    outcome, so each is queued once (docs/adr/0052)."""
+    account_id = _dota_account_id(account)
+    response = await ctx.http.get(player_matches_url(account_id), params=params)
+    check_status(response, "player")
+    listed = parse(MatchList, response.body).root
+    tracked = list(
+        dict.fromkeys(
+            match.match_id
+            for match in listed
+            if tracked_mode(match.game_mode, match.lobby_type, match.duration)
+        )
+    )
+    if not tracked:
+        return Outcome()
+
+    seen = await ctx.db.fetch(
+        select(polled_matches.c.match_id).where(
+            polled_matches.c.account_id == account_id,
+            polled_matches.c.match_id.in_(tracked),
+        )
+    )
+    already = {row.match_id for row in seen}
+    new = [match_id for match_id in tracked if match_id not in already]
+    if not new:
+        return Outcome()
+    return Outcome(
+        writes=(_record_polled(account_id, new),),
+        jobs=tuple(spec for match_id in new for spec in _jobs_for(match_id, account)),
+    )
 
 
 def _jobs_for(match_id: int, account: LinkedAccount) -> tuple[JobSpec, JobSpec]:

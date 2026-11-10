@@ -24,6 +24,11 @@ REQUEST_URL = f"https://api.opendota.com/api/request/{MATCH_ID}"
 PARSED = (FIXTURES_DIR / "match_parsed.json").read_bytes()
 UNPARSED = (FIXTURES_DIR / "match_unparsed.json").read_bytes()
 PARSE_REQUESTED = (FIXTURES_DIR / "parse_request.json").read_bytes()
+_RECORDED = json.loads(PARSED)
+ENDED = datetime.fromtimestamp(_RECORDED["start_time"] + _RECORDED["duration"], UTC)
+JUST_AFTER = ENDED + timedelta(hours=1)
+"""Tests fix "now": the recorded match's age would otherwise change with the
+date the tests run."""
 
 
 def opendota(
@@ -37,7 +42,9 @@ def opendota(
     )
 
 
-async def fetch(http: FakeHttp, attempt: int = 1) -> Outcome:
+async def fetch(
+    http: FakeHttp, attempt: int = 1, now: datetime = JUST_AFTER
+) -> Outcome:
     job = Job[FetchMatch](
         type="fetch_match",
         payload=FetchMatch(match_id=MATCH_ID),
@@ -45,7 +52,7 @@ async def fetch(http: FakeHttp, attempt: int = 1) -> Outcome:
         attempt=attempt,
     )
     context = Context(db=NoDatabase(), archive=NoArchive(), http=http)
-    return await GankReportPlugin().fetch_match(job, context)
+    return await GankReportPlugin(clock=lambda: now).fetch_match(job, context)
 
 
 def written(write: UpdateBase) -> dict[str, Any]:
@@ -157,3 +164,22 @@ async def test_a_turbo_match_is_recorded_as_turbo() -> None:
     outcome = await fetch(opendota(response(turbo)))
     [write] = outcome.writes
     assert written(write)["mode"] == "turbo"
+
+
+@pytest.mark.parametrize(
+    ("age", "waits"),
+    [(timedelta(days=7), True), (timedelta(days=7, seconds=1), False)],
+    ids=["seven-days", "just-over"],
+)
+async def test_an_old_unparsed_match_is_recorded_without_asking_for_a_parse(
+    age: timedelta, waits: bool
+) -> None:
+    http = opendota(response(UNPARSED))
+    outcome = await fetch(http, now=ENDED + age)
+    if waits:
+        assert outcome == Outcome(retry_in=timedelta(minutes=5))
+        assert [call.method for call in http.calls] == ["GET", "POST"]
+    else:
+        assert http.calls == [Call("GET", MATCH_URL)]  # one call, no parse request
+        [write] = outcome.writes
+        assert written(write)["parsed"] is False

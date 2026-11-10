@@ -160,6 +160,9 @@ CASES = [
                 ),
                 Example(ScheduledRun(scheduled_for=TICK)),
             ],
+            "backfill": [
+                Example(ME, opendota_listing_my_matches),
+            ],
             "analyze_match": [
                 Example(
                     AnalyzeMatch(match_id=5001, account=ME),

@@ -19,6 +19,7 @@ from guildhall.contract.storage import Database, plugin_metadata
 
 if TYPE_CHECKING:
     from guildhall.contract.commands import Command
+    from guildhall.contract.links import AccountLink
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,10 @@ class SourcePlugin(ABC):
     def commands(self) -> list[Command[Any]]:
         """Slash commands; none by default."""
         return []
+
+    def account_link(self) -> AccountLink | None:
+        """The kind of account `/link` connects for this plug-in; none by default."""
+        return None
 
     @property
     def tables(self) -> MetaData:

@@ -16,9 +16,12 @@ from annotated_types import Ge, Le, MaxLen, MinLen
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
-from guildhall.contract import Command, SourcePlugin
+from guildhall.contract import AccountLink, Command, SourcePlugin
 
 OPTION_NAME: Final = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+LINK_COMMAND: Final = "link"
+ACCOUNT_OPTION: Final = "account"
+"""`/link <kind> account:<id>`: the platform's own command (docs/adr/0066)."""
 MAX_DESCRIPTION: Final = 100
 
 
@@ -140,3 +143,45 @@ def _command(name: str, command: Command[Any]) -> dict[str, Any]:
 def commands_of(plugins: Mapping[str, SourcePlugin]) -> list[Command[Any]]:
     """Every enabled plug-in's commands."""
     return [command for plugin in plugins.values() for command in plugin.commands()]
+
+
+def link_command(links: Iterable[AccountLink]) -> dict[str, Any] | None:
+    """`/link`, with one subcommand per kind of account; None if there are none."""
+    subcommands = [
+        {
+            "type": OptionType.SUB_COMMAND,
+            "name": link.kind,
+            "description": f"Link your {link.kind} account",
+            "options": [
+                {
+                    "type": OptionType.STRING,
+                    "name": ACCOUNT_OPTION,
+                    "description": link.description,
+                    "required": True,
+                }
+            ],
+        }
+        for link in sorted(links, key=lambda link: link.kind)
+    ]
+    if not subcommands:
+        return None
+    return {
+        "type": CommandType.CHAT_INPUT,
+        "name": LINK_COMMAND,
+        "description": "Link your game accounts",
+        "options": subcommands,
+    }
+
+
+def all_commands(plugins: Mapping[str, SourcePlugin]) -> list[dict[str, Any]]:
+    """Everything to register: the plug-ins' commands and `/link`, by name."""
+    commands = discord_commands(commands_of(plugins))
+    kinds = [
+        account_link
+        for plugin in plugins.values()
+        if (account_link := plugin.account_link()) is not None
+    ]
+    link = link_command(kinds)
+    if link is not None:
+        commands.append(link)
+    return sorted(commands, key=lambda command: command["name"])
