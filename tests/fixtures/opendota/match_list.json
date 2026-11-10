@@ -1,0 +1,222 @@
+[
+  {
+    "match_id": 5001,
+    "player_slot": 131,
+    "radiant_win": true,
+    "hero_id": 42,
+    "start_time": 1793926779,
+    "duration": 1729,
+    "game_mode": 4,
+    "lobby_type": 0,
+    "version": null
+  },
+  {
+    "match_id": 5002,
+    "player_slot": 130,
+    "radiant_win": false,
+    "hero_id": 26,
+    "start_time": 1762473121,
+    "duration": 3944,
+    "game_mode": 22,
+    "lobby_type": 7,
+    "version": null
+  },
+  {
+    "match_id": 5003,
+    "player_slot": 130,
+    "radiant_win": true,
+    "hero_id": 84,
+    "start_time": 1761598593,
+    "duration": 2663,
+    "game_mode": 22,
+    "lobby_type": 7,
+    "version": null
+  },
+  {
+    "match_id": 5004,
+    "player_slot": 4,
+    "radiant_win": true,
+    "hero_id": 30,
+    "start_time": 1760232966,
+    "duration": 3505,
+    "game_mode": 22,
+    "lobby_type": 7,
+    "version": null
+  },
+  {
+    "match_id": 5005,
+    "player_slot": 1,
+    "radiant_win": true,
+    "hero_id": 31,
+    "start_time": 1760226402,
+    "duration": 2739,
+    "game_mode": 22,
+    "lobby_type": 7,
+    "version": null
+  },
+  {
+    "match_id": 5006,
+    "player_slot": 1,
+    "radiant_win": false,
+    "hero_id": 47,
+    "start_time": 1731200412,
+    "duration": 2540,
+    "game_mode": 2,
+    "lobby_type": 9,
+    "version": null
+  },
+  {
+    "match_id": 5007,
+    "player_slot": 2,
+    "radiant_win": false,
+    "hero_id": 99,
+    "start_time": 1709431059,
+    "duration": 2655,
+    "game_mode": 22,
+    "lobby_type": 0,
+    "version": null
+  },
+  {
+    "match_id": 5008,
+    "player_slot": 130,
+    "radiant_win": true,
+    "hero_id": 16,
+    "start_time": 1681002443,
+    "duration": 1934,
+    "game_mode": 2,
+    "lobby_type": 9,
+    "version": null
+  },
+  {
+    "match_id": 5009,
+    "player_slot": 131,
+    "radiant_win": true,
+    "hero_id": 42,
+    "start_time": 1668910019,
+    "duration": 1872,
+    "game_mode": 2,
+    "lobby_type": 9,
+    "version": null
+  },
+  {
+    "match_id": 5010,
+    "player_slot": 131,
+    "radiant_win": false,
+    "hero_id": 54,
+    "start_time": 1668906010,
+    "duration": 3036,
+    "game_mode": 2,
+    "lobby_type": 9,
+    "version": null
+  },
+  {
+    "match_id": 5011,
+    "player_slot": 4,
+    "radiant_win": false,
+    "hero_id": 30,
+    "start_time": 1662392008,
+    "duration": 2096,
+    "game_mode": 22,
+    "lobby_type": 7,
+    "version": null
+  },
+  {
+    "match_id": 5012,
+    "player_slot": 1,
+    "radiant_win": false,
+    "hero_id": 30,
+    "start_time": 1662230596,
+    "duration": 2488,
+    "game_mode": 22,
+    "lobby_type": 7,
+    "version": null
+  },
+  {
+    "match_id": 5013,
+    "player_slot": 4,
+    "radiant_win": true,
+    "hero_id": 87,
+    "start_time": 1662228070,
+    "duration": 1986,
+    "game_mode": 22,
+    "lobby_type": 7,
+    "version": null
+  },
+  {
+    "match_id": 5014,
+    "player_slot": 128,
+    "radiant_win": false,
+    "hero_id": 30,
+    "start_time": 1662224563,
+    "duration": 2472,
+    "game_mode": 22,
+    "lobby_type": 7,
+    "version": null
+  },
+  {
+    "match_id": 5015,
+    "player_slot": 132,
+    "radiant_win": false,
+    "hero_id": 73,
+    "start_time": 1661209138,
+    "duration": 2583,
+    "game_mode": 4,
+    "lobby_type": 0,
+    "version": null
+  },
+  {
+    "match_id": 5016,
+    "player_slot": 131,
+    "radiant_win": true,
+    "hero_id": 72,
+    "start_time": 1661102887,
+    "duration": 2022,
+    "game_mode": 4,
+    "lobby_type": 0,
+    "version": null
+  },
+  {
+    "match_id": 5017,
+    "player_slot": 130,
+    "radiant_win": true,
+    "hero_id": 63,
+    "start_time": 1661099000,
+    "duration": 3090,
+    "game_mode": 4,
+    "lobby_type": 0,
+    "version": null
+  },
+  {
+    "match_id": 5018,
+    "player_slot": 3,
+    "radiant_win": false,
+    "hero_id": 18,
+    "start_time": 1661093954,
+    "duration": 2788,
+    "game_mode": 4,
+    "lobby_type": 0,
+    "version": null
+  },
+  {
+    "match_id": 5019,
+    "player_slot": 0,
+    "radiant_win": false,
+    "hero_id": 54,
+    "start_time": 1634774546,
+    "duration": 3249,
+    "game_mode": 22,
+    "lobby_type": 0,
+    "version": null
+  },
+  {
+    "match_id": 5020,
+    "player_slot": 131,
+    "radiant_win": true,
+    "hero_id": 68,
+    "start_time": 1634765135,
+    "duration": 2676,
+    "game_mode": 4,
+    "lobby_type": 0,
+    "version": 21
+  }
+]
