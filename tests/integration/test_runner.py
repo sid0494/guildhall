@@ -28,7 +28,9 @@ from guildhall.contract import (
     JobType,
     Message,
     Outcome,
+    PermanentError,
     RateLimitPolicy,
+    RetryableError,
     SourcePlugin,
 )
 from guildhall.platform.accounts import linked_accounts
@@ -41,7 +43,13 @@ from guildhall.platform.http import HttpSettings, UpstreamHttp, new_client
 from guildhall.platform.outbox import outbox_events, outbox_jobs
 from guildhall.platform.queue import ReceivedMessage
 from guildhall.platform.replies import outbox_replies
-from guildhall.platform.runner import JobRunner, RunnerSettings, RunResult, Status
+from guildhall.platform.runner import (
+    COMMAND_FAILED,
+    JobRunner,
+    RunnerSettings,
+    RunResult,
+    Status,
+)
 from guildhall.plugins.synthetic import SyntheticPlugin, records
 
 type LogLines = Callable[[], list[dict[str, Any]]]
@@ -673,7 +681,21 @@ class Accounting(SourcePlugin):
         return []
 
     def commands(self) -> list[Command[Any]]:
-        return [Command(("who",), "Who am I", WhoOptions, self.who)]
+        return [
+            Command(("who",), "Who am I", WhoOptions, self.who),
+            Command(("broken",), "Always fails for good", WhoOptions, self.broken),
+            Command(("flaky",), "Always fails, worth a retry", WhoOptions, self.flaky),
+        ]
+
+    async def broken(
+        self, invocation: Invocation[WhoOptions], ctx: Context
+    ) -> CommandOutcome:
+        raise PermanentError("this command cannot work")
+
+    async def flaky(
+        self, invocation: Invocation[WhoOptions], ctx: Context
+    ) -> CommandOutcome:
+        raise RetryableError("try again")
 
     async def who(
         self, invocation: Invocation[WhoOptions], ctx: Context
@@ -751,7 +773,8 @@ async def test_a_command_with_invalid_options_is_dead_lettered(
     result = await runner.run(message(command(run_id, options={})))
     assert result.status is Status.DEAD_LETTERED
     assert result.reason == "invalid options: text: Field required"
-    assert await queued_replies(engine, run_id) == []
+    [reply] = await queued_replies(engine, run_id)
+    assert reply.message == {"content": COMMAND_FAILED}
 
 
 async def test_a_command_the_plugin_no_longer_has_is_dead_lettered(
@@ -803,3 +826,45 @@ async def test_a_command_sees_the_callers_linked_account(
         assert await runner.run(message(body)) == RunResult(Status.DONE)
         [reply] = await queued_replies(engine, f"{run_id}-{user}")
         assert reply.message == {"content": expected}
+
+
+@pytest.fixture
+def accounting_runner(
+    engine: AsyncEngine,
+    queue: FakeQueue,
+    archive: FakeArchive,
+    http: UpstreamHttp,
+    cleanup: None,
+    replies: None,
+) -> JobRunner:
+    settings = RunnerSettings(max_receive_count=3)
+    return JobRunner(
+        {"accounting": Accounting()}, engine, queue, archive, http, settings
+    )
+
+
+def accounting(run_id: str, name: str) -> str:
+    return command(run_id, path=(name,), options={}, plugin="accounting")
+
+
+async def test_a_command_that_fails_for_good_replies_with_an_error(
+    accounting_runner: JobRunner, engine: AsyncEngine, run_id: str
+) -> None:
+    result = await accounting_runner.run(message(accounting(run_id, "broken")))
+    assert result.status is Status.DEAD_LETTERED
+    [reply] = await queued_replies(engine, run_id)
+    assert reply.message == {"content": COMMAND_FAILED}
+
+
+async def test_a_failing_command_replies_with_an_error_only_on_its_last_receive(
+    accounting_runner: JobRunner, engine: AsyncEngine, run_id: str
+) -> None:
+    body = accounting(run_id, "flaky")
+    for receive_count in (1, 2):
+        result = await accounting_runner.run(message(body, receive_count))
+        assert result.status is Status.RETRYING
+        assert await queued_replies(engine, run_id) == []
+    result = await accounting_runner.run(message(body, receive_count=3))
+    assert result.status is Status.RETRYING  # SQS dead-letters it after this
+    [reply] = await queued_replies(engine, run_id)
+    assert reply.message == {"content": COMMAND_FAILED}

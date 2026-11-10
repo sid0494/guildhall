@@ -70,6 +70,24 @@ class FakePruner:
 
 
 @dataclass
+class FakeDispatcher:
+    """Settles `batches` in turn (an Exception fails that pass), then 0."""
+
+    name: str = "fake"
+    batches: list[int | Exception] = field(default_factory=list)
+    calls: int = 0
+
+    async def dispatch_once(self) -> int:
+        self.calls += 1
+        if not self.batches:
+            return 0
+        batch = self.batches.pop(0)
+        if isinstance(batch, Exception):
+            raise batch
+        return batch
+
+
+@dataclass
 class FakeScheduler:
     """Records when it was asked; an exception in `fails` is raised instead."""
 
@@ -129,6 +147,7 @@ async def start(
         error_pause: float = 0,
         flush: float = 1,
         pruners: tuple[FakePruner, ...] = (),
+        dispatchers: tuple[FakeDispatcher, ...] = (),
     ) -> asyncio.Task[None]:
         worker = Worker(
             consumer,
@@ -139,6 +158,7 @@ async def start(
                 schedule_interval_seconds=schedule_interval,
             ),
             pruners=pruners,
+            dispatchers=dispatchers,
             relay_idle_seconds=relay_idle,
             error_pause_seconds=error_pause,
             flush_seconds=flush,
@@ -316,3 +336,34 @@ async def test_a_failing_pruner_does_not_stop_the_others(
     assert broken.calls >= 3
     failed = [line for line in log_lines() if line["event"] == "prune failed"]
     assert {line.get("table") for line in failed} == {"broken"}
+
+
+async def test_a_dispatcher_goes_again_at_once_while_there_is_work(
+    start: Start,
+) -> None:
+    dispatcher = FakeDispatcher(batches=[5, 5, 2])
+    start(relay_idle=10, dispatchers=(dispatcher,))
+    await until(lambda: dispatcher.calls == 4)
+    await asyncio.sleep(0.02)
+    assert dispatcher.calls == 4  # idle after the empty pass, not polling
+
+
+async def test_a_failing_dispatcher_is_logged_and_keeps_going(
+    start: Start, log_lines: LogLines
+) -> None:
+    dispatcher = FakeDispatcher(batches=[ConnectionError("database down"), 1])
+    start(relay_idle=10, error_pause=0, dispatchers=(dispatcher,))
+    await until(lambda: dispatcher.calls == 3)
+    failed = [line for line in log_lines() if line["event"] == "dispatch failed"]
+    assert [line["dispatcher"] for line in failed] == ["fake"]
+
+
+async def test_dispatchers_stop_with_the_worker(
+    consumer: FakeConsumer, start: Start, stop: asyncio.Event
+) -> None:
+    dispatcher = FakeDispatcher()
+    task = start(relay_idle=0.001, dispatchers=(dispatcher,))
+    await until(lambda: dispatcher.calls > 0)
+    stop.set()
+    consumer.drained.set()
+    await asyncio.wait_for(task, timeout=1)

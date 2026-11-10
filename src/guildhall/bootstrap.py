@@ -34,6 +34,12 @@ from guildhall.platform.logs import LogSettings, configure_logging
 from guildhall.platform.queue import QueueSettings, open_job_queue
 from guildhall.platform.registry import build_registry
 from guildhall.platform.relay import OutboxRelay, RelaySettings
+from guildhall.platform.reply_dispatcher import (
+    ReplyDispatcher,
+    ReplyPruner,
+    ReplySettings,
+    open_interaction_webhooks,
+)
 from guildhall.platform.runner import JobRunner, RunnerSettings
 from guildhall.platform.scheduler import Scheduler
 from guildhall.platform.settings import Settings
@@ -58,6 +64,7 @@ async def run_worker(stop: asyncio.Event) -> None:
             open_job_queue(QueueSettings()) as queue,
             open_archive(ArchiveSettings()) as archive,
             open_upstream_http(HttpSettings()) as http,
+            open_interaction_webhooks() as webhooks,
         ):
             runner = JobRunner(plugins, engine, queue, archive, http, RunnerSettings())
             worker = Worker(
@@ -65,7 +72,8 @@ async def run_worker(stop: asyncio.Event) -> None:
                 OutboxRelay(engine, queue, RelaySettings()),
                 Scheduler(plugins, engine),
                 WorkerSettings(),
-                pruners=(InteractionPruner(engine),),
+                pruners=(InteractionPruner(engine), ReplyPruner(engine)),
+                dispatchers=(ReplyDispatcher(engine, webhooks, ReplySettings()),),
             )
             _log.info(
                 "worker started",

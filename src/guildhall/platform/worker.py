@@ -37,6 +37,15 @@ class Relay(Protocol):
     async def prune(self) -> int: ...
 
 
+class Dispatcher(Protocol):
+    """Sends one batch of something outbound; returns how many it settled."""
+
+    @property
+    def name(self) -> str: ...
+
+    async def dispatch_once(self) -> int: ...
+
+
 class Pruner(Protocol):
     """Deletes rows past their retention; the worker runs each on its interval."""
 
@@ -77,6 +86,7 @@ class Worker:
         settings: WorkerSettings,
         *,
         pruners: Sequence[Pruner] = (),
+        dispatchers: Sequence[Dispatcher] = (),
         relay_idle_seconds: float = 1,
         error_pause_seconds: float = 5,
         flush_seconds: float = 5,
@@ -84,6 +94,7 @@ class Worker:
         self._consumer = consumer
         self._relay = relay
         self._pruners = pruners
+        self._dispatchers = dispatchers
         self._scheduler = scheduler
         self._settings = settings
         self._relay_idle_seconds = relay_idle_seconds
@@ -98,9 +109,16 @@ class Worker:
             relay = loops.create_task(self._relay_loop(finishing))
             schedule = loops.create_task(self._schedule_loop())
             prune = loops.create_task(self._prune_loop())
+            dispatch = [
+                loops.create_task(self._dispatch_loop(dispatcher))
+                for dispatcher in self._dispatchers
+            ]
             await self._consumer.consume(stop)
             schedule.cancel()
             prune.cancel()
+            for task in dispatch:
+                # What they have not sent waits in Postgres for the next worker.
+                task.cancel()
             finishing.set()
             _, left = await asyncio.wait({relay}, timeout=self._flush_seconds)
             if left:
@@ -130,6 +148,20 @@ class Worker:
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(self._relay_idle_seconds):
                     await finishing.wait()
+
+    async def _dispatch_loop(self, dispatcher: Dispatcher) -> None:
+        """Go again at once while there is work; wait a moment when idle."""
+        while True:
+            try:
+                settled = await dispatcher.dispatch_once()
+            except Exception:
+                _log.warning(
+                    "dispatch failed", dispatcher=dispatcher.name, exc_info=True
+                )
+                await asyncio.sleep(self._error_pause_seconds)
+                continue
+            if not settled:
+                await asyncio.sleep(self._relay_idle_seconds)
 
     async def _schedule_loop(self) -> None:
         """Fire due ticks at start-up, then every interval; a failure waits."""

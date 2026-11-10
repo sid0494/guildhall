@@ -56,6 +56,7 @@ from guildhall.platform.replies import add_reply
 from guildhall.platform.storage import PluginDatabase
 
 _RANDOM = random.SystemRandom()
+COMMAND_FAILED = "Something went wrong with that command."
 _log = structlog.get_logger(__name__)
 
 
@@ -91,6 +92,9 @@ class RunnerSettings(BaseSettings):
     never runs twice at once."""
     retry_base_seconds: float = 20
     retry_cap_seconds: float = 900
+    max_receive_count: int = 5
+    """The queue's redrive limit (as GUILDHALL_MAX_RECEIVE_COUNT): a failure on
+    the last receive is final, so a command's error reply is queued then."""
 
 
 class Status(StrEnum):
@@ -281,7 +285,12 @@ class JobRunner:
         attempt: int,
         plugin: SourcePlugin,
     ) -> RunResult:
-        """Run a slash command's handler; its reply commits with its outcome."""
+        """Run a slash command's handler; its reply commits with its outcome.
+
+        A command that fails for good still gets a reply: the generic
+        `COMMAND_FAILED`, so the user is not left with "thinking..."
+        (docs/adr/0064).
+        """
         try:
             if await self._already_processed(envelope.dedupe_key):
                 await self._queue.delete(message)
@@ -294,6 +303,35 @@ class JobRunner:
             return await self._dead_letter(
                 message, f"invalid command job: {describe(error)}"
             )
+        result = await self._run_command_job(message, envelope, attempt, plugin, job)
+        final = result.status is Status.DEAD_LETTERED or (
+            result.status is Status.RETRYING
+            and message.receive_count >= self._settings.max_receive_count
+        )
+        if final:
+            await self._reply_failed(job)
+        return result
+
+    async def _reply_failed(self, job: CommandJob) -> None:
+        try:
+            async with self._engine.begin() as connection:
+                await add_reply(
+                    connection,
+                    job.application_id,
+                    job.interaction_token,
+                    Message(content=COMMAND_FAILED),
+                )
+        except SQLAlchemyError:
+            _log.warning("error reply not queued", exc_info=True)
+
+    async def _run_command_job(
+        self,
+        message: ReceivedMessage,
+        envelope: JobEnvelope,
+        attempt: int,
+        plugin: SourcePlugin,
+        job: CommandJob,
+    ) -> RunResult:
         command = commands_by_path(plugin).get(job.path)
         if command is None:
             return await self._dead_letter(
