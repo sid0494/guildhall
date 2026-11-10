@@ -10,7 +10,7 @@ import json
 import signal
 import sys
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import structlog
 import uvicorn
@@ -25,8 +25,14 @@ from guildhall.platform.consumer import ConsumerSettings, JobConsumer
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.discord import (
     DiscordSettings,
+    open_bot,
     open_discord,
     register_commands,
+)
+from guildhall.platform.event_dispatcher import (
+    EventDispatcher,
+    EventPruner,
+    PostSettings,
 )
 from guildhall.platform.http import HttpSettings, open_upstream_http
 from guildhall.platform.interactions import InteractionPruner, PostgresInteractionLog
@@ -43,7 +49,7 @@ from guildhall.platform.reply_dispatcher import (
 from guildhall.platform.runner import JobRunner, RunnerSettings
 from guildhall.platform.scheduler import Scheduler
 from guildhall.platform.settings import Settings
-from guildhall.platform.worker import Worker, WorkerSettings
+from guildhall.platform.worker import Dispatcher, Worker, WorkerSettings
 from guildhall.plugins import CATALOGUE
 
 _log = structlog.get_logger(__name__)
@@ -65,19 +71,43 @@ async def run_worker(stop: asyncio.Event) -> None:
             open_archive(ArchiveSettings()) as archive,
             open_upstream_http(HttpSettings()) as http,
             open_interaction_webhooks() as webhooks,
+            AsyncExitStack() as optional,
         ):
+            dispatchers: list[Dispatcher] = [
+                ReplyDispatcher(engine, webhooks, ReplySettings())
+            ]
+            posts = PostSettings()
+            if posts.discord_channel_id and posts.discord_bot_token:
+                bot = await optional.enter_async_context(
+                    open_bot(posts.discord_bot_token)
+                )
+                dispatchers.append(
+                    EventDispatcher(
+                        engine, bot, plugins, posts.discord_channel_id, posts
+                    )
+                )
+            else:
+                _log.warning(
+                    "posting to discord is off: set GUILDHALL_DISCORD_CHANNEL_ID"
+                    " and GUILDHALL_DISCORD_BOT_TOKEN"
+                )
             runner = JobRunner(plugins, engine, queue, archive, http, RunnerSettings())
             worker = Worker(
                 JobConsumer(queue, runner, consumer_settings),
                 OutboxRelay(engine, queue, RelaySettings()),
                 Scheduler(plugins, engine),
                 WorkerSettings(),
-                pruners=(InteractionPruner(engine), ReplyPruner(engine)),
-                dispatchers=(ReplyDispatcher(engine, webhooks, ReplySettings()),),
+                pruners=(
+                    InteractionPruner(engine),
+                    ReplyPruner(engine),
+                    EventPruner(engine),
+                ),
+                dispatchers=dispatchers,
             )
             _log.info(
                 "worker started",
                 plugins=sorted(plugins),
+                dispatchers=[dispatcher.name for dispatcher in dispatchers],
                 concurrency=consumer_settings.worker_concurrency,
             )
             await worker.run(stop)

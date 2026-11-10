@@ -26,6 +26,10 @@ class Metric:
     needs_parse: bool
     """Whether only a replay-parsed match gives a value."""
     compute: Callable[[Match, Player], float | None]
+    emoji: str = ""
+    """Shown before the label in posts."""
+    decimals: int = 0
+    """How many decimal places posts show."""
 
 
 def last_hits_at_10(match: Match, player: Player) -> float | None:
@@ -56,18 +60,46 @@ def observer_wards_placed(match: Match, player: Player) -> float | None:
 
 
 METRICS: Final = (
-    Metric("last_hits_10", "Last hits at 10 min", True, True, last_hits_at_10),
-    Metric("gpm", "GPM", True, False, gold_per_minute),
-    Metric("deaths_per_10", "Deaths per 10 min", False, False, deaths_per_10_minutes),
     Metric(
-        "hero_damage_per_min",
-        "Hero damage per min",
-        True,
-        False,
-        hero_damage_per_minute,
+        name="last_hits_10",
+        label="Last hits at 10 min",
+        higher_is_better=True,
+        needs_parse=True,
+        compute=last_hits_at_10,
+        emoji="🗡️",
     ),
     Metric(
-        "observer_wards", "Observer wards placed", True, True, observer_wards_placed
+        name="gpm",
+        label="GPM",
+        higher_is_better=True,
+        needs_parse=False,
+        compute=gold_per_minute,
+        emoji="💰",
+    ),
+    Metric(
+        name="deaths_per_10",
+        label="Deaths per 10 min",
+        higher_is_better=False,
+        needs_parse=False,
+        compute=deaths_per_10_minutes,
+        emoji="💀",
+        decimals=1,
+    ),
+    Metric(
+        name="hero_damage_per_min",
+        label="Hero damage per min",
+        higher_is_better=True,
+        needs_parse=False,
+        compute=hero_damage_per_minute,
+        emoji="💥",
+    ),
+    Metric(
+        name="observer_wards",
+        label="Observer wards placed",
+        higher_is_better=True,
+        needs_parse=True,
+        compute=observer_wards_placed,
+        emoji="👁️",
     ),
 )
 

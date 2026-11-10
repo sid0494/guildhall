@@ -19,11 +19,13 @@ from guildhall.contract import (
     Archive,
     Context,
     ContractModel,
+    Event,
     Job,
     JobSpec,
     JobType,
     LinkedAccount,
     LinkRequest,
+    Message,
     Outcome,
     PermanentError,
     RateLimitPolicy,
@@ -46,6 +48,7 @@ from guildhall.plugins.gank_report.opendota import (
     parse_request_url,
     player_matches_url,
 )
+from guildhall.plugins.gank_report.render import render_match
 from guildhall.plugins.gank_report.tables import (
     matches,
     metadata,
@@ -123,6 +126,14 @@ class GankReportPlugin(SourcePlugin):
             JobType("poll_matches", ScheduledRun, self.poll_matches),
             JobType("backfill", LinkedAccount, self.backfill),
         ]
+
+    def event_types(self) -> list[type[Event]]:
+        return [MatchAnalyzed]
+
+    def render(self, event: Event) -> Message | None:
+        if isinstance(event, MatchAnalyzed):
+            return render_match(event)
+        return None
 
     def account_link(self) -> AccountLink | None:
         return AccountLink(
@@ -259,6 +270,7 @@ class GankReportPlugin(SourcePlugin):
             mode=mode.value,
             parsed=match.parsed,
             played_at=match.played_at,
+            duration_seconds=match.duration,
             metrics=_results(values, averages),
         )
         return Outcome(writes=writes, events=(event,))

@@ -14,12 +14,13 @@ from sqlalchemy import MetaData
 
 from guildhall.contract.archive import RawArchive
 from guildhall.contract.http import Http
-from guildhall.contract.models import Job, Outcome, RateLimitPolicy, Schedule
+from guildhall.contract.models import Event, Job, Outcome, RateLimitPolicy, Schedule
 from guildhall.contract.storage import Database, plugin_metadata
 
 if TYPE_CHECKING:
     from guildhall.contract.commands import Command
     from guildhall.contract.links import AccountLink
+    from guildhall.contract.messages import Message
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,19 @@ class SourcePlugin(ABC):
 
     def account_link(self) -> AccountLink | None:
         """The kind of account `/link` connects for this plug-in; none by default."""
+        return None
+
+    def event_types(self) -> list[type[Event]]:
+        """Every kind of event the plug-in emits, so the platform can rebuild a
+        stored event as its model before rendering it; none by default."""
+        return []
+
+    def render(self, event: Event) -> Message | None:
+        """How an event looks in Discord, or None not to post it.
+
+        Pure formatting: it takes no context and must not do I/O, so delivering
+        posts never waits on a plug-in (docs/adr/0069). Posts nothing by default.
+        """
         return None
 
     @property

@@ -8,11 +8,11 @@ who asked and their linked account for the plug-in, never Discord itself.
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
+from pydantic import BaseModel, ConfigDict, SerializeAsAny
 from sqlalchemy.sql.expression import UpdateBase
 
+from guildhall.contract.messages import Message
 from guildhall.contract.models import (
     ContractModel,
     Event,
@@ -21,20 +21,6 @@ from guildhall.contract.models import (
     NonEmptyStr,
 )
 from guildhall.contract.plugin import Context
-
-MESSAGE_MAX_LENGTH = 2000
-"""Discord's limit for a message's text."""
-
-
-class Message(ContractModel):
-    """A Discord message, as plug-ins describe it: a command's reply or a post.
-
-    More fields (such as embeds) are added later without breaking plug-ins.
-    Who sees a reply is the command's choice (`Command.private`), not the
-    message's.
-    """
-
-    content: Annotated[str, Field(min_length=1, max_length=MESSAGE_MAX_LENGTH)]
 
 
 class Invocation[O: BaseModel](ContractModel):

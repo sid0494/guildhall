@@ -29,6 +29,7 @@ from guildhall.contract import (
     Job,
     JobSpec,
     JobType,
+    Message,
     Outcome,
     RateLimitPolicy,
     Schedule,
@@ -89,6 +90,9 @@ class Sample(SourcePlugin):
 
     def schedules(self) -> list[Schedule]:
         return self._schedules
+
+    def event_types(self) -> list[type[Event]]:
+        return [Pinged]
 
 
 def test_valid_plugin_has_no_problems() -> None:
@@ -380,3 +384,53 @@ def test_archiving_the_same_response_twice_in_one_outcome_is_reported() -> None:
     assert check_outcome(Sample(), Outcome(archives=(first, second))) == [
         "archive 'match' '1' is declared more than once"
     ]
+
+
+def test_an_emitted_event_must_be_a_declared_type() -> None:
+    class Unlisted(Event):
+        type: str = "sample.unlisted"
+        schema_version: Literal[1] = 1
+
+    outcome = Outcome(events=(Unlisted(dedupe_key="sample:unlisted:1"),))
+    assert any(
+        "'sample.unlisted' is not one of the plug-in's event_types()" in p
+        for p in check_outcome(Sample(), outcome)
+    )
+
+
+class Untyped(Event):
+    schema_version: Literal[1] = 1
+
+
+class Foreign(Event):
+    type: str = "other.thing"
+    schema_version: Literal[1] = 1
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        ([Untyped], "Untyped must fix its type as a default starting with 'sample.'"),
+        ([Foreign], "Foreign must fix its type"),
+        ([Pinged, Pinged], "'sample.pinged' is declared more than once"),
+    ],
+    ids=["no-default-type", "not-namespaced", "twice"],
+)
+def test_declared_event_types_are_checked(
+    declared: list[type[Event]], expected: str
+) -> None:
+    class Declaring(Sample):
+        def event_types(self) -> list[type[Event]]:
+            return declared
+
+    assert any(expected in p for p in check_declarations(Declaring()))
+
+
+def test_render_may_not_be_async() -> None:
+    class Awaiting(Sample):
+        async def render(self, event: Event) -> Message | None:  # type: ignore[override]
+            return None
+
+    assert any(
+        "render must be a plain function" in p for p in check_declarations(Awaiting())
+    )

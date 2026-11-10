@@ -142,6 +142,22 @@ docker compose exec postgres psql -U guildhall -d guildhall \
   -c 'select count(*), count(*) filter (where parsed) as parsed from gank_report_matches'
 ```
 
+### Match reports
+
+The worker posts reports to `GUILDHALL_DISCORD_CHANNEL_ID` (right-click the
+channel, Copy Channel ID), with the bot token; without both it logs that
+posting is off. In that channel the bot needs View Channel, Send Messages and
+Embed Links. Each post shows in the worker's log as `event posted`; an event
+the worker cannot post shows as `event abandoned` with the reason.
+
+Hero names and icons come from a table shipped with Gank Report. When Valve
+adds or renames a hero:
+
+```sh
+uv run python scripts/update_heroes.py                    # rewrite the table from OpenDota
+git diff src/guildhall/plugins/gank_report/heroes.json   # review what changed
+```
+
 ### Letting Discord in: the tunnel
 
 Discord calls the api over public HTTPS, so locally an ngrok agent forwards a

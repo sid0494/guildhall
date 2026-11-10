@@ -53,6 +53,6 @@ async def add_reply(
         insert(outbox_replies).values(
             application_id=application_id,
             interaction_token=interaction_token,
-            message=message.model_dump(mode="json"),
+            message=message.model_dump(mode="json", exclude_defaults=True),
         )
     )

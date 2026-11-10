@@ -10,7 +10,6 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from enum import Enum, auto
 from typing import Any, Final
 
 import httpx
@@ -20,7 +19,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from guildhall.platform.discord import API_URL, USER_AGENT
+from guildhall.contract import Message
+from guildhall.platform.discord import (
+    API_URL,
+    USER_AGENT,
+    Delivery,
+    classify,
+    discord_message,
+)
 from guildhall.platform.replies import outbox_replies
 
 REPLY_DEADLINE: Final = timedelta(minutes=14)
@@ -28,8 +34,6 @@ RETENTION: Final = timedelta(days=1)
 MAX_RATE_LIMIT_PAUSE: Final = 60.0
 MAX_RETRY_PAUSE: Final = 30.0
 """After a failed send, the pass waits 2, 4, 8... seconds, up to this."""
-NO_MENTIONS: Final[dict[str, list[str]]] = {"parse": []}
-"""Replies can hold user text: never let one ping @everyone, roles or users."""
 
 _log = structlog.get_logger(__name__)
 
@@ -46,13 +50,6 @@ class ReplySettings(BaseSettings):
     reply_batch_size: int = Field(default=20, gt=0)
     reply_max_attempts: int = Field(default=5, gt=0)
     """Failed sends (Discord 5xx, timeouts) before a reply is abandoned."""
-
-
-class _Sent(Enum):
-    SENT = auto()
-    GIVE_UP = auto()
-    TRY_AGAIN = auto()
-    RATE_LIMITED = auto()
 
 
 @asynccontextmanager
@@ -108,40 +105,34 @@ class ReplyDispatcher:
                     settled += 1
                     continue
                 result, detail = await self._send(row)
-                if result is _Sent.RATE_LIMITED:
+                if result is Delivery.RATE_LIMITED:
                     pause = min(detail, MAX_RATE_LIMIT_PAUSE)
                     _log.warning("discord rate limit", seconds=pause)
                     break
                 settled += await self._record(connection, row, result, detail)
-                if result is _Sent.TRY_AGAIN:
+                if result is Delivery.TRY_AGAIN:
                     pause = max(pause, min(2.0 ** (row.attempts + 1), MAX_RETRY_PAUSE))
         if pause:
             await self._sleep(pause)
         return settled
 
-    async def _send(self, row: Any) -> tuple[_Sent, Any]:
+    async def _send(self, row: Any) -> tuple[Delivery, Any]:
         # The path holds the interaction token: never log it, nor the URL.
         path = (
             f"/webhooks/{row.application_id}/{row.interaction_token}/messages/@original"
         )
         try:
             response = await self._client.patch(
-                path, json=row.message | {"allowed_mentions": NO_MENTIONS}
+                path, json=discord_message(Message.model_validate(row.message))
             )
         except httpx.HTTPError as error:
-            return _Sent.TRY_AGAIN, type(error).__name__
-        if response.is_success:
-            return _Sent.SENT, response.status_code
-        if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
-            return _Sent.RATE_LIMITED, _retry_after(response)
-        if response.status_code >= 500:
-            return _Sent.TRY_AGAIN, response.status_code
-        return _Sent.GIVE_UP, response.status_code
+            return Delivery.TRY_AGAIN, type(error).__name__
+        return classify(response)
 
     async def _record(
-        self, connection: AsyncConnection, row: Any, result: _Sent, detail: Any
+        self, connection: AsyncConnection, row: Any, result: Delivery, detail: Any
     ) -> int:
-        if result is _Sent.SENT:
+        if result is Delivery.SENT:
             await connection.execute(
                 update(outbox_replies)
                 .where(outbox_replies.c.id == row.id)
@@ -149,7 +140,7 @@ class ReplyDispatcher:
             )
             _log.info("reply sent", reply=row.id)
             return 1
-        if result is _Sent.GIVE_UP:
+        if result is Delivery.GIVE_UP:
             await _abandon(connection, row.id, f"discord answered {detail}")
             return 1
         attempts = row.attempts + 1
@@ -172,18 +163,6 @@ async def _abandon(connection: AsyncConnection, reply_id: int, reason: str) -> N
         .values(abandoned_at=func.now())
     )
     _log.warning("reply abandoned", reply=reply_id, reason=reason)
-
-
-def _retry_after(response: httpx.Response) -> float:
-    """Discord's wait, from the body or the header; a second if neither."""
-    try:
-        return float(response.json()["retry_after"])
-    except ValueError, KeyError, TypeError:
-        pass
-    try:
-        return float(response.headers.get("retry-after", 1))
-    except ValueError:
-        return 1.0
 
 
 class ReplyPruner:
