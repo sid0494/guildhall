@@ -11,7 +11,9 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Double,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     Table,
     Text,
@@ -66,6 +68,23 @@ player_matches = Table(
     ),
 )
 """One row per linked account per match, written by its analysis."""
+
+metrics = Table(
+    "gank_report_metrics",
+    metadata,
+    Column("match_id", BigInteger, primary_key=True),
+    Column("account_id", BigInteger, primary_key=True),
+    Column("metric", Text, primary_key=True),
+    Column("value", Double, nullable=True),
+    ForeignKeyConstraint(
+        ["match_id", "account_id"],
+        [player_matches.c.match_id, player_matches.c.account_id],
+    ),
+)
+"""One row per metric per analysed player match, in long format
+(docs/adr/0054). A NULL value means the metric was computed but the match
+gives none; a missing row means it has not been computed yet (docs/adr/0053).
+"""
 
 polled_matches = Table(
     "gank_report_polled_matches",

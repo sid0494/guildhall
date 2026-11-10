@@ -67,6 +67,24 @@ class RowsDatabase:
         return self.rows
 
 
+class ScriptedDatabase:
+    """`Context.db` that answers each read with the next preset rows, in order.
+
+    For handlers that read more than once; a read beyond the script fails the
+    test. Like `RowsDatabase`, it cannot tell whether a query is right.
+    """
+
+    def __init__(self, *answers: Sequence[Any]) -> None:
+        self._answers = list(answers)
+        self.statements: list[Select[Any]] = []
+
+    async def fetch(self, statement: Select[Any]) -> Sequence[Row[Any]]:
+        self.statements.append(statement)
+        if not self._answers:
+            raise AssertionError("unexpected database read")
+        return self._answers.pop(0)
+
+
 @dataclass
 class DictArchive:
     """`Context.archive` backed by a dict of `(kind, id)` to body."""

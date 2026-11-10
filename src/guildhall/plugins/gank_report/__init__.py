@@ -5,11 +5,12 @@ OpenDota to parse it, and its raw response archived; each linked account in it
 is then analysed from that archive (docs/adr/0043).
 """
 
-from datetime import timedelta
+from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 from pydantic import PositiveInt
-from sqlalchemy import func, select
+from sqlalchemy import Row, Select, func, select
 from sqlalchemy.dialects.postgresql import Insert, insert
 
 from guildhall.contract import (
@@ -27,6 +28,8 @@ from guildhall.contract import (
     ScheduledRun,
     SourcePlugin,
 )
+from guildhall.plugins.gank_report.events import MatchAnalyzed, MetricResult
+from guildhall.plugins.gank_report.metrics import METRICS
 from guildhall.plugins.gank_report.modes import Mode, tracked_mode
 from guildhall.plugins.gank_report.opendota import (
     Match,
@@ -41,6 +44,7 @@ from guildhall.plugins.gank_report.opendota import (
 from guildhall.plugins.gank_report.tables import (
     matches,
     metadata,
+    metrics,
     player_matches,
     polled_matches,
 )
@@ -51,6 +55,11 @@ POLL_PARAMS: Final = {"limit": 20, "date": 365, "significant": 0}
 filter would drop it, so the plug-in applies its own (docs/adr/0051, 0052)."""
 ANALYZE_DELAY: Final = timedelta(minutes=5)
 """An analysis is queued this late, since its fetch is never done sooner."""
+POST_WINDOW: Final = timedelta(hours=12)
+"""Only a match that ended this recently is posted to Discord: older ones (a
+first poll, a backfill, a recompute) are recorded quietly (docs/adr/0056)."""
+BASELINE_GAMES: Final = 20
+"""How many previous games on the same hero and kind a baseline averages."""
 
 PARSE_RETRY_DELAYS: Final = (timedelta(minutes=5), timedelta(minutes=10))
 """The waits after the first and second unparsed fetches. The attempt after
@@ -84,6 +93,9 @@ class GankReportPlugin(SourcePlugin):
     # (docs/adr/0048).
     rate_limit = RateLimitPolicy(per_minute=50, per_day=2_000)
     tables = metadata
+
+    def __init__(self, clock: Callable[[], datetime] | None = None) -> None:
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     def job_types(self) -> list[JobType[Any]]:
         return [
@@ -177,9 +189,10 @@ class GankReportPlugin(SourcePlugin):
         again (for a new metric, say) costs no upstream calls.
         """
         match_id = job.payload.match_id
-        account_id = _dota_account_id(job.payload.account)
+        account = job.payload.account
+        account_id = _dota_account_id(account)
         fetched = await ctx.db.fetch(
-            select(matches.c.match_id).where(matches.c.match_id == match_id)
+            select(matches.c.mode).where(matches.c.match_id == match_id)
         )
         if not fetched:
             if job.attempt < ANALYZE_MAX_ATTEMPTS:
@@ -193,7 +206,32 @@ class GankReportPlugin(SourcePlugin):
         player = match.player(account_id)
         if player is None:
             raise PermanentError("the linked account is not among the match's players")
-        return Outcome(writes=(_record_player(match_id, account_id, player),))
+
+        values = {metric.name: metric.compute(match, player) for metric in METRICS}
+        writes = (
+            _record_player(match_id, account_id, player),
+            _record_metrics(match_id, account_id, values),
+        )
+        ended = match.played_at + timedelta(seconds=match.duration)
+        if self._clock() - ended > POST_WINDOW:
+            return Outcome(writes=writes)
+
+        mode = Mode(fetched[0].mode)
+        averages = await ctx.db.fetch(
+            _baselines(account_id, player.hero_id, mode, match.played_at)
+        )
+        event = MatchAnalyzed(
+            dedupe_key=f"gank_report:match_analyzed:{match_id}:{account.id}",
+            match_id=match_id,
+            discord_user_id=account.discord_user_id,
+            hero_id=player.hero_id,
+            won=player.win,
+            mode=mode.value,
+            parsed=match.parsed,
+            played_at=match.played_at,
+            metrics=_results(values, averages),
+        )
+        return Outcome(writes=writes, events=(event,))
 
 
 def _jobs_for(match_id: int, account: LinkedAccount) -> tuple[JobSpec, JobSpec]:
@@ -225,6 +263,74 @@ def _record_polled(account_id: int, match_ids: list[int]) -> Insert:
         )
         .on_conflict_do_nothing()
     )
+
+
+def _record_metrics(
+    match_id: int, account_id: int, values: Mapping[str, float | None]
+) -> Insert:
+    """One row per metric, NULL where the match gives no value (docs/adr/0053)."""
+    statement = insert(metrics).values(
+        [
+            {
+                "match_id": match_id,
+                "account_id": account_id,
+                "metric": name,
+                "value": value,
+            }
+            for name, value in values.items()
+        ]
+    )
+    return statement.on_conflict_do_update(
+        index_elements=[metrics.c.match_id, metrics.c.account_id, metrics.c.metric],
+        set_={"value": statement.excluded.value},
+    )
+
+
+def _baselines(
+    account_id: int, hero_id: int, mode: Mode, before: datetime
+) -> Select[Any]:
+    """Each metric's average over the player's previous games on this hero and
+    kind (at most `BASELINE_GAMES`), and how many of them had a value.
+
+    `AVG` and `COUNT(value)` skip NULLs, so a game without a value neither
+    drags the average down nor counts towards it.
+    """
+    recent = (
+        select(player_matches.c.match_id)
+        .join(matches, matches.c.match_id == player_matches.c.match_id)
+        .where(
+            player_matches.c.account_id == account_id,
+            player_matches.c.hero_id == hero_id,
+            matches.c.mode == mode.value,
+            matches.c.played_at < before,
+        )
+        .order_by(matches.c.played_at.desc())
+        .limit(BASELINE_GAMES)
+    )
+    return (
+        select(
+            metrics.c.metric,
+            func.avg(metrics.c.value).label("average"),
+            func.count(metrics.c.value).label("games"),
+        )
+        .where(metrics.c.account_id == account_id, metrics.c.match_id.in_(recent))
+        .group_by(metrics.c.metric)
+    )
+
+
+def _results(
+    values: Mapping[str, float | None], averages: Sequence[Row[Any]]
+) -> tuple[MetricResult, ...]:
+    by_metric = {row.metric: row for row in averages}
+    results = []
+    for name, value in values.items():
+        row = by_metric.get(name)
+        games = 0 if row is None else int(row.games)
+        average = None if row is None or games == 0 else float(row.average)
+        results.append(
+            MetricResult(name=name, value=value, baseline=average, baseline_games=games)
+        )
+    return tuple(results)
 
 
 def _dota_account_id(account: LinkedAccount) -> int:
