@@ -18,7 +18,9 @@ LOSS_COLOUR: Final = 0xE74C3C
 KIND: Final = {"normal": "Normal", "turbo": "Turbo"}
 
 
-def render_match(event: MatchAnalyzed) -> Message:
+def render_match(event: MatchAnalyzed, mention: bool = True) -> Message:
+    """The report; `mention=False` for a command's reply, where the person
+    asking needs no notification."""
     hero = hero_name(event.hero_id)
     title = " · ".join(
         part
@@ -41,8 +43,8 @@ def render_match(event: MatchAnalyzed) -> Message:
         else f"Your first {event.mode} game on {hero} that Gank Report has seen."
     )
     return Message(
-        content=f"<@{event.discord_user_id}>",
-        mentions=(event.discord_user_id,),
+        content=f"<@{event.discord_user_id}>" if mention else "",
+        mentions=(event.discord_user_id,) if mention else (),
         embeds=(
             Embed(
                 author=EmbedAuthor(name=hero, icon_url=hero_icon_url(event.hero_id)),
