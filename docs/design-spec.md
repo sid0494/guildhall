@@ -263,7 +263,7 @@ Guildhall uses Discord's HTTP interactions endpoint, not a persistent gateway co
 | --- | --- | --- |
 | `/link dota <account id>` | Gank Report | Links my Dota account and starts the backfill |
 | `/link steam <steam id>` | Side Quest | Links Steam and runs the first sync |
-| `/match last` | Gank Report | Report for the latest analyzed match |
+| `/match last` | Gank Report | Report for the latest analyzed match, rebuilt as it was posted ([ADR 0073](adr/0073-match-last-rebuilds-the-report.md)) |
 | `/trend [hero] [weeks]` | Gank Report | Focus metrics over time |
 | `/focus add\|remove <metric>` | Gank Report | Choose the skills to track |
 | `/backlog [state]` | Side Quest | Lists games by state |
@@ -437,7 +437,7 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 
 - [x] `poll_matches`, `fetch_match`, parse-retry, S3 archive, `analyze_match`, metric registry
 - [x] Per-plug-in rate limiter with backoff
-- [ ] Discord endpoint, `/link`, `/match last`, outbox dispatcher
+- [x] Discord endpoint, `/link`, `/match last`, outbox dispatcher
 - [x] api service in docker-compose
 
 **Done when:** I play a match and the report shows up in Discord on its own.
