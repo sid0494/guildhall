@@ -66,3 +66,22 @@ player_matches = Table(
     ),
 )
 """One row per linked account per match, written by its analysis."""
+
+polled_matches = Table(
+    "gank_report_polled_matches",
+    metadata,
+    Column("account_id", BigInteger, primary_key=True),
+    Column("match_id", BigInteger, primary_key=True),
+    Column(
+        "polled_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+)
+"""Matches a poll has already queued jobs for, per account (docs/adr/0052).
+
+Written in the same transaction as those jobs, so each match is queued once
+per account; a failed job is redriven from the dead-letter queue, never
+queued again by a poll.
+"""
