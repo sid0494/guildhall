@@ -87,6 +87,7 @@ guildhall/
   migrations/           Alembic
   compose.yaml          local infrastructure: Postgres, Redis, moto
   tests/                unit, contract and fixture tests; mock upstream server
+  scripts/              development tools, such as the fixture recorder
   k8s/base/             Deployments, Services, Ingress, probes
   k8s/overlays/         local (kind) and aws (EKS)
   infra/                Terraform: VPC, EKS, ECR, RDS, SQS, S3
@@ -377,7 +378,7 @@ Discord public key and bot token, Steam API key, IsThereAnyDeal key. Configurati
 - **Integration:** code that depends on Postgres behaviour (constraints, transactions, locking) runs against the compose services, in a separate `guildhall_test` database, marked `integration`. Pre-commit skips them; CI runs them in their own job ([ADR 0015](adr/0015-integration-tests-on-compose.md)).
 - **End-to-end:** the containerised stack, run as a separate throwaway compose project, driven from outside through the queue and Postgres; `make test-e2e` ([ADR 0027](adr/0027-end-to-end-tests.md)). The first test is M1's acceptance scenario.
 - **Contract tests:** a shared suite every plug-in must pass, run against a fake platform: declarations are valid, every job type has examples, payloads survive a JSON round trip, outcomes are namespaced, errors are typed, and (from M2) `render` does no I/O. A guard test fails if a plug-in has no examples.
-- **Recorded fixtures:** real upstream responses (a parsed match, an unparsed match, a wishlist, a price batch) saved once and replayed, so tests never call live APIs.
+- **Recorded fixtures:** real upstream responses (a parsed match, an unparsed match, a wishlist, a price batch) saved once and replayed, so tests never call live APIs. A script run by hand records them as plain response bodies ([ADR 0039](adr/0039-recorded-fixtures-are-response-bodies-from-a-script.md)); Gank Report's are the owner's own latest match, before and after its parse ([ADR 0040](adr/0040-fixtures-record-the-owners-own-match.md)). Each is trimmed to an allowlist of the fields the plug-in uses, and every match and account ID is replaced with a fake ([ADR 0041](adr/0041-fixtures-are-trimmed-to-an-allowlist-with-fake-ids.md)). A structural test fails if a fixture holds any other field or a real-looking ID ([ADR 0042](adr/0042-a-structural-test-checks-fixtures.md)).
 - **Mock upstream server:** a small service in the cluster that can return `429`s, slow responses, never-parsed matches and malformed payloads on demand. All drills point at it.
 - **Synthetic plug-in:** a plug-in whose job payload says what to do (sleep, wait, fail, crash, fan out, emit events). Disabled by default; enabled for end-to-end tests, drills and the load check.
 

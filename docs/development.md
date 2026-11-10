@@ -151,6 +151,28 @@ make test-e2e-down   # ...and remove it afterwards
 `make` comes from the `make` package (`sudo apt-get install make`); `make`
 alone lists the targets.
 
+### Recorded fixtures
+
+Tests replay real OpenDota responses from `tests/fixtures/opendota/` and never
+call the live API. [`scripts/record_opendota.py`](../scripts/record_opendota.py)
+records them from the account in `GUILDHALL_FIXTURE_ACCOUNT_ID` (set it in
+`.env`): its match list, and its newest unparsed match before and after
+OpenDota parses it. Every response is trimmed to the fields the recorder's
+shapes name and every match and account ID is replaced with a fake, so the
+files can be committed to this public repository
+([ADR 0039](adr/0039-recorded-fixtures-are-response-bodies-from-a-script.md) to
+[ADR 0042](adr/0042-a-structural-test-checks-fixtures.md)).
+
+```sh
+uv run python scripts/record_opendota.py   # record; waits up to 15 minutes for the parse
+git diff --stat tests/fixtures             # see which fixtures changed
+uv run pytest tests/unit/test_recorded_fixtures.py  # only allowlisted fields and fake IDs
+```
+
+It needs the account's Dota setting **Expose Public Match Data** on, and a
+recent match that OpenDota has not parsed yet. To use a field in a test that the
+fixtures lack, add it to the recorder's shape and record again.
+
 ## Workflow
 
 Changes go through pull requests into `main`, which are squash-merged. CI runs
