@@ -24,10 +24,37 @@ COMMAND: dict[str, Any] = {
 }
 
 
+class MemoryInteractionLog:
+    """`InteractionLog` in memory; can be made unready or failing."""
+
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+        self.ready = True
+        self.failing = False
+
+    async def first_time(self, interaction_id: str) -> bool:
+        if self.failing:
+            raise ConnectionError("database down")
+        if interaction_id in self.seen:
+            return False
+        self.seen.append(interaction_id)
+        return True
+
+    async def is_ready(self) -> bool:
+        return self.ready
+
+
 @pytest.fixture
-async def client() -> AsyncIterator[httpx.AsyncClient]:
-    app = create_app(ApiSettings(discord_public_key=PUBLIC_KEY_HEX))
-    transport = httpx.ASGITransport(app=app)
+def interaction_log() -> MemoryInteractionLog:
+    return MemoryInteractionLog()
+
+
+@pytest.fixture
+async def client(
+    interaction_log: MemoryInteractionLog,
+) -> AsyncIterator[httpx.AsyncClient]:
+    settings = ApiSettings(discord_public_key=PUBLIC_KEY_HEX)
+    transport = httpx.ASGITransport(app=create_app(settings, interaction_log))
     async with httpx.AsyncClient(transport=transport, base_url="http://api") as c:
         yield c
 
@@ -128,4 +155,50 @@ def test_the_public_key_is_required() -> None:
 
 def test_a_wrong_public_key_stops_the_app_at_startup() -> None:
     with pytest.raises(ValueError):  # noqa: PT011 - raised by the key parser
-        create_app(ApiSettings(discord_public_key="not-a-key"))
+        create_app(ApiSettings(discord_public_key="not-a-key"), MemoryInteractionLog())
+
+
+async def test_a_command_is_recorded_before_it_is_answered(
+    client: httpx.AsyncClient, interaction_log: MemoryInteractionLog
+) -> None:
+    body = encode(COMMAND)
+    await post(client, body, signed(body))
+    assert interaction_log.seen == [COMMAND["id"]]
+
+
+async def test_a_retried_command_gets_the_same_answer_and_is_recorded_once(
+    client: httpx.AsyncClient,
+    interaction_log: MemoryInteractionLog,
+    log_lines: Callable[[], list[dict[str, Any]]],
+) -> None:
+    body = encode(COMMAND)
+    first = await post(client, body, signed(body))
+    again = await post(client, body, signed(body))
+    assert (again.status_code, again.json()) == (first.status_code, first.json())
+    assert interaction_log.seen == [COMMAND["id"]]
+    assert "interaction repeated" in [line["event"] for line in log_lines()]
+
+
+async def test_pings_are_not_recorded(
+    client: httpx.AsyncClient, interaction_log: MemoryInteractionLog
+) -> None:
+    body = encode({"id": "2", "type": 1, "token": "t"})
+    await post(client, body, signed(body))
+    assert interaction_log.seen == []
+
+
+async def test_a_command_is_refused_while_it_cannot_be_recorded(
+    client: httpx.AsyncClient, interaction_log: MemoryInteractionLog
+) -> None:
+    interaction_log.failing = True
+    body = encode(COMMAND)
+    assert (await post(client, body, signed(body))).status_code == 503
+
+
+async def test_ready_when_the_log_is(
+    client: httpx.AsyncClient, interaction_log: MemoryInteractionLog
+) -> None:
+    assert (await client.get("/readyz")).json() == {"status": "ready"}
+    interaction_log.ready = False
+    response = await client.get("/readyz")
+    assert (response.status_code, response.json()) == (503, {"status": "not ready"})

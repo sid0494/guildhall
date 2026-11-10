@@ -7,10 +7,12 @@ entry points such as the worker call these functions to join the two.
 import asyncio
 import signal
 import sys
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 
 import structlog
 import uvicorn
+from fastapi import FastAPI
 
 from guildhall.api.app import ApiSettings, create_app
 from guildhall.contract import SourcePlugin
@@ -18,6 +20,7 @@ from guildhall.platform.archive import ArchiveSettings, open_archive
 from guildhall.platform.consumer import ConsumerSettings, JobConsumer
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.http import HttpSettings, open_upstream_http
+from guildhall.platform.interactions import InteractionPruner, PostgresInteractionLog
 from guildhall.platform.logs import LogSettings, configure_logging
 from guildhall.platform.queue import QueueSettings, open_job_queue
 from guildhall.platform.registry import build_registry
@@ -53,6 +56,7 @@ async def run_worker(stop: asyncio.Event) -> None:
                 OutboxRelay(engine, queue, RelaySettings()),
                 Scheduler(plugins, engine),
                 WorkerSettings(),
+                pruners=(InteractionPruner(engine),),
             )
             _log.info(
                 "worker started",
@@ -107,8 +111,15 @@ def api_main() -> None:
     """
     configure_logging(LogSettings())
     settings = ApiSettings()
+    engine = create_engine(DatabaseSettings())
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        yield
+        await engine.dispose()
+
     uvicorn.run(
-        create_app(settings),
+        create_app(settings, PostgresInteractionLog(engine), lifespan),
         host=settings.api_host,
         port=settings.api_port,
         log_config=None,

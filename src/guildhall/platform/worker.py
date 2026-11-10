@@ -13,6 +13,7 @@ empty, within a deadline.
 
 import asyncio
 import contextlib
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -33,6 +34,15 @@ class Relay(Protocol):
     """Outbox housekeeping; `OutboxRelay` provides it."""
 
     async def relay_once(self) -> int: ...
+    async def prune(self) -> int: ...
+
+
+class Pruner(Protocol):
+    """Deletes rows past their retention; the worker runs each on its interval."""
+
+    @property
+    def name(self) -> str: ...
+
     async def prune(self) -> int: ...
 
 
@@ -66,12 +76,14 @@ class Worker:
         scheduler: Scheduler,
         settings: WorkerSettings,
         *,
+        pruners: Sequence[Pruner] = (),
         relay_idle_seconds: float = 1,
         error_pause_seconds: float = 5,
         flush_seconds: float = 5,
     ) -> None:
         self._consumer = consumer
         self._relay = relay
+        self._pruners = pruners
         self._scheduler = scheduler
         self._settings = settings
         self._relay_idle_seconds = relay_idle_seconds
@@ -129,7 +141,8 @@ class Worker:
             await asyncio.sleep(self._settings.schedule_interval_seconds)
 
     async def _prune_loop(self) -> None:
-        """Prune at start-up, then every interval; a failure waits for the next."""
+        """Prune at start-up, then every interval; a failure waits for the next,
+        and does not stop the other pruners."""
         while True:
             try:
                 pruned = await self._relay.prune()
@@ -137,4 +150,11 @@ class Worker:
                 _log.warning("prune failed", exc_info=True)
             else:
                 _log.info("pruned outbox", count=pruned)
+            for pruner in self._pruners:
+                try:
+                    count = await pruner.prune()
+                except Exception:
+                    _log.warning("prune failed", table=pruner.name, exc_info=True)
+                else:
+                    _log.info("pruned", table=pruner.name, count=count)
             await asyncio.sleep(self._settings.prune_interval_seconds)

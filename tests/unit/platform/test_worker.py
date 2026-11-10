@@ -55,6 +55,21 @@ class FakeRelay:
 
 
 @dataclass
+class FakePruner:
+    """Counts its runs; fails each run while `failing`."""
+
+    name: str
+    failing: bool = False
+    calls: int = 0
+
+    async def prune(self) -> int:
+        self.calls += 1
+        if self.failing:
+            raise ConnectionError("database down")
+        return 2
+
+
+@dataclass
 class FakeScheduler:
     """Records when it was asked; an exception in `fails` is raised instead."""
 
@@ -113,6 +128,7 @@ async def start(
         schedule_interval: float = 10,
         error_pause: float = 0,
         flush: float = 1,
+        pruners: tuple[FakePruner, ...] = (),
     ) -> asyncio.Task[None]:
         worker = Worker(
             consumer,
@@ -122,6 +138,7 @@ async def start(
                 prune_interval_seconds=prune_interval,
                 schedule_interval_seconds=schedule_interval,
             ),
+            pruners=pruners,
             relay_idle_seconds=relay_idle,
             error_pause_seconds=error_pause,
             flush_seconds=flush,
@@ -278,3 +295,24 @@ async def test_stopping_cancels_the_scheduler_without_waiting_for_it(
     consumer.drained.set()
     await asyncio.wait_for(worker, timeout=1)  # its 10 s wait was cancelled
     assert len(scheduler.calls) == 1
+
+
+async def test_each_extra_pruner_runs_every_interval_and_is_logged(
+    relay: FakeRelay, start: Start, log_lines: LogLines
+) -> None:
+    seen = FakePruner("interactions_seen")
+    start(prune_interval=0.01, pruners=(seen,))
+    await until(lambda: seen.calls >= 3 and relay.prune_calls >= 3)
+    pruned = [line for line in log_lines() if line["event"] == "pruned"]
+    assert pruned[0] | {"table": "interactions_seen", "count": 2} == pruned[0]
+
+
+async def test_a_failing_pruner_does_not_stop_the_others(
+    relay: FakeRelay, start: Start, log_lines: LogLines
+) -> None:
+    broken, fine = FakePruner("broken", failing=True), FakePruner("fine")
+    start(prune_interval=0.01, pruners=(broken, fine))
+    await until(lambda: fine.calls >= 3)
+    assert broken.calls >= 3
+    failed = [line for line in log_lines() if line["event"] == "prune failed"]
+    assert {line.get("table") for line in failed} == {"broken"}
