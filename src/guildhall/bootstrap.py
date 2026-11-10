@@ -20,7 +20,7 @@ from guildhall.api.app import ApiSettings, create_app
 from guildhall.contract import SourcePlugin
 from guildhall.platform.archive import ArchiveSettings, open_archive
 from guildhall.platform.command_jobs import command_routes
-from guildhall.platform.command_schema import commands_of, discord_commands
+from guildhall.platform.command_schema import all_commands
 from guildhall.platform.consumer import ConsumerSettings, JobConsumer
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.discord import (
@@ -157,7 +157,7 @@ def register_commands_main() -> None:
     )
     arguments = parser.parse_args()
     configure_logging(LogSettings())
-    commands = discord_commands(commands_of(load_plugins(Settings())))
+    commands = all_commands(load_plugins(Settings()))
     if arguments.dry_run:
         print(json.dumps(commands, indent=2))
         return

@@ -13,7 +13,13 @@ from typing import Any, Final
 
 from pydantic import Field
 
-from guildhall.contract import Command, ContractModel, JobSpec, SourcePlugin
+from guildhall.contract import (
+    AccountLink,
+    Command,
+    ContractModel,
+    JobSpec,
+    SourcePlugin,
+)
 
 COMMAND_TYPE_PREFIX: Final = "command:"
 
@@ -51,25 +57,37 @@ def command_spec(plugin: str, interaction_id: str, job: CommandJob) -> JobSpec:
     )
 
 
+LINK_COMMAND: Final = "link"
+
+
 @dataclass(frozen=True)
 class CommandRoute:
-    """Which plug-in owns a command, and the command itself."""
+    """Which plug-in a command goes to, and whether its replies are private.
+
+    A plug-in's own command carries `command`; `/link <kind>` carries the
+    plug-in's `link` instead, and is always private.
+    """
 
     plugin: str
-    command: Command[Any]
+    private: bool
+    command: Command[Any] | None = None
+    link: AccountLink | None = None
 
 
 def command_routes(
     plugins: Mapping[str, SourcePlugin],
 ) -> Mapping[tuple[str, ...], CommandRoute]:
-    """Every enabled plug-in's commands, by path."""
-    return MappingProxyType(
-        {
-            command.path: CommandRoute(name, command)
-            for name, plugin in plugins.items()
-            for command in plugin.commands()
-        }
-    )
+    """Every enabled plug-in's commands and `/link` kinds, by path."""
+    routes = {
+        command.path: CommandRoute(name, command.private, command=command)
+        for name, plugin in plugins.items()
+        for command in plugin.commands()
+    }
+    for name, plugin in plugins.items():
+        link = plugin.account_link()
+        if link is not None:
+            routes[(LINK_COMMAND, link.kind)] = CommandRoute(name, True, link=link)
+    return MappingProxyType(routes)
 
 
 def commands_by_path(plugin: SourcePlugin) -> dict[tuple[str, ...], Command[Any]]:

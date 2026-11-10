@@ -8,7 +8,11 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
 from guildhall.contract import SourcePlugin
-from guildhall.platform.checks import check_command_owners, check_declarations
+from guildhall.platform.checks import (
+    check_command_owners,
+    check_declarations,
+    check_link_kinds,
+)
 
 
 class RegistryError(Exception):
@@ -55,6 +59,12 @@ def build_registry(
             {name: plugin.commands() for name, plugin in plugins.items()}
         )
     )
+    links = {
+        name: link
+        for name, plugin in plugins.items()
+        if (link := plugin.account_link()) is not None
+    }
+    problems.extend(check_link_kinds(links))
     if problems:
         raise RegistryError(problems)
     return MappingProxyType(plugins)

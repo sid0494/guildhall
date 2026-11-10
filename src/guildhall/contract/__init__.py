@@ -13,6 +13,13 @@ from guildhall.contract.commands import (
 )
 from guildhall.contract.errors import PermanentError, RetryableError
 from guildhall.contract.http import Http, HttpResponse
+from guildhall.contract.links import (
+    Accepted,
+    AccountLink,
+    LinkRequest,
+    LinkVerifier,
+    Rejected,
+)
 from guildhall.contract.models import (
     Archive,
     ContractModel,
@@ -29,6 +36,8 @@ from guildhall.contract.plugin import Context, Handler, JobType, SourcePlugin
 from guildhall.contract.storage import Database, plugin_metadata
 
 __all__ = [
+    "Accepted",
+    "AccountLink",
     "Archive",
     "Command",
     "CommandHandler",
@@ -44,12 +53,15 @@ __all__ = [
     "Job",
     "JobSpec",
     "JobType",
+    "LinkRequest",
+    "LinkVerifier",
     "LinkedAccount",
     "Message",
     "Outcome",
     "PermanentError",
     "RateLimitPolicy",
     "RawArchive",
+    "Rejected",
     "RetryableError",
     "Schedule",
     "ScheduledRun",

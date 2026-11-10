@@ -18,9 +18,11 @@ from sqlalchemy.sql.expression import UpdateBase
 from sqlalchemy.sql.selectable import TableClause
 
 from guildhall.contract import (
+    AccountLink,
     Command,
     ContractModel,
     JobType,
+    LinkedAccount,
     Outcome,
     Schedule,
     ScheduledRun,
@@ -79,6 +81,9 @@ def check_declarations(plugin: SourcePlugin) -> list[str]:
             )
 
     declared = job_types_by_name(plugin)
+    link = plugin.account_link()
+    if link is not None:
+        problems.extend(_check_account_link(link, declared))
     scheduled: set[str] = set()
     for schedule in plugin.schedules():
         problems.extend(_check_schedule(schedule, declared.get(schedule.job_type)))
@@ -135,6 +140,49 @@ def _check_commands(commands: list[Command[Any]]) -> list[str]:
         if len(path) == 2 and (path[0],) in paths:
             problems.append(f"/{path[0]} is both a command and a group of subcommands")
     return problems
+
+
+def _check_account_link(
+    link: AccountLink, declared: dict[str, JobType[Any]]
+) -> list[str]:
+    problems: list[str] = []
+    if not _COMMAND_NAME.fullmatch(link.kind):
+        problems.append(
+            f"account link kind {link.kind!r} must match {_COMMAND_NAME.pattern}"
+        )
+    if not 1 <= len(link.description) <= MAX_DESCRIPTION:
+        problems.append(
+            f"account link {link.kind!r} needs a description of 1 to"
+            f" {MAX_DESCRIPTION} characters"
+        )
+    if link.on_link is not None:
+        job_type = declared.get(link.on_link)
+        if job_type is None:
+            problems.append(
+                f"account link {link.kind!r}: on_link {link.on_link!r} is not a"
+                " declared job type"
+            )
+        elif job_type.payload_model is not LinkedAccount:
+            problems.append(
+                f"account link {link.kind!r}: job type {link.on_link!r} must take"
+                " LinkedAccount as its payload"
+            )
+    return problems
+
+
+def check_link_kinds(links: dict[str, AccountLink]) -> list[str]:
+    """Problems across plug-ins: each `/link` kind has one owner.
+
+    `links` maps plug-in names to their account links.
+    """
+    owners: dict[str, list[str]] = {}
+    for plugin, link in links.items():
+        owners.setdefault(link.kind, []).append(plugin)
+    return [
+        f"/link {kind} is declared by more than one plug-in: {', '.join(sorted(names))}"
+        for kind, names in sorted(owners.items())
+        if len(names) > 1
+    ]
 
 
 def check_command_owners(commands: dict[str, list[Command[Any]]]) -> list[str]:
