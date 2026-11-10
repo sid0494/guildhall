@@ -51,6 +51,8 @@ services:
   api:
     <<: *test-settings
     environment:
+      # The api routes commands to the enabled plug-ins, as the worker runs them.
+      GUILDHALL_PLUGINS: synthetic
       # The public half of a keypair whose private half was thrown away: no
       # request can be signed for it, so the tests check that unsigned and
       # forged ones are refused. Public keys are not secrets, but gitleaks'
