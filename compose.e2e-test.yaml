@@ -47,3 +47,14 @@ services:
       GUILDHALL_AWS_SECRET_ACCESS_KEY: moto-e2e-test
       # A shorter long poll, so stopping the stack after the tests is quicker.
       GUILDHALL_RECEIVE_WAIT_SECONDS: "5"
+
+  api:
+    <<: *test-settings
+    environment:
+      # The public half of a keypair whose private half was thrown away: no
+      # request can be signed for it, so the tests check that unsigned and
+      # forged ones are refused. Public keys are not secrets, but gitleaks'
+      # discord-api-token rule cannot tell one from a token, hence the allow.
+      GUILDHALL_DISCORD_PUBLIC_KEY: 6b6a152e6e04e81cfd232f91f691668232f3d0a77be7afff7c80f81d2b1cd2dd # gitleaks:allow
+    ports: !override
+      - "127.0.0.1:18000:8000"
