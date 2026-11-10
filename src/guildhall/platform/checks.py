@@ -18,6 +18,7 @@ from sqlalchemy.sql.expression import UpdateBase
 from sqlalchemy.sql.selectable import TableClause
 
 from guildhall.contract import (
+    Command,
     ContractModel,
     JobType,
     Outcome,
@@ -26,6 +27,7 @@ from guildhall.contract import (
     SourcePlugin,
 )
 from guildhall.contract.storage import NAMING_CONVENTION
+from guildhall.platform.command_schema import OptionError, options_schema
 
 SUPPORTED_CONTRACT_VERSIONS = frozenset({1})
 
@@ -33,6 +35,11 @@ MAX_QUEUE_DELAY = timedelta(minutes=15)
 """SQS rejects message delays longer than 15 minutes."""
 
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]*")
+_COMMAND_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
+"""Discord allows 1 to 32 characters; we keep to lower-case ASCII."""
+PLATFORM_COMMANDS = frozenset({"guildhall", "link"})
+"""Top-level command names the platform keeps for itself (docs/adr/0062)."""
+MAX_DESCRIPTION = 100
 _ARCHIVE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
 """Starts with a letter or digit and has no slash, so it cannot leave the prefix."""
 
@@ -81,6 +88,8 @@ def check_declarations(plugin: SourcePlugin) -> list[str]:
             )
         scheduled.add(schedule.job_type)
 
+    problems.extend(_check_commands(plugin.commands()))
+
     tables = plugin.tables
     if dict(tables.naming_convention) != NAMING_CONVENTION:
         problems.append("tables must be declared in a plugin_metadata()")
@@ -90,6 +99,59 @@ def check_declarations(plugin: SourcePlugin) -> list[str]:
                 f"table {table_name!r} must be named {plugin.name + '_'!r}..."
             )
     return problems
+
+
+def _check_commands(commands: list[Command[Any]]) -> list[str]:
+    problems: list[str] = []
+    paths: set[tuple[str, ...]] = set()
+    for command in commands:
+        name = "/" + " ".join(command.path)
+        if not 1 <= len(command.path) <= 2:
+            problems.append(f"command {name!r} must have one or two names")
+        for part in command.path:
+            if not _COMMAND_NAME.fullmatch(part):
+                problems.append(
+                    f"command {name!r}: {part!r} must match {_COMMAND_NAME.pattern}"
+                )
+        if command.path and command.path[0] in PLATFORM_COMMANDS:
+            problems.append(f"command {name!r}: /{command.path[0]} is the platform's")
+        if not 1 <= len(command.description) <= MAX_DESCRIPTION:
+            problems.append(
+                f"command {name!r} needs a description of 1 to {MAX_DESCRIPTION}"
+                " characters"
+            )
+        if not issubclass(command.options, ContractModel):
+            problems.append(
+                f"command {name!r} options model must derive from ContractModel"
+            )
+        try:
+            options_schema(command.options)
+        except OptionError as error:
+            problems.append(f"command {name!r}: {error}")
+        if command.path in paths:
+            problems.append(f"command {name!r} is declared more than once")
+        paths.add(command.path)
+    for path in paths:
+        if len(path) == 2 and (path[0],) in paths:
+            problems.append(f"/{path[0]} is both a command and a group of subcommands")
+    return problems
+
+
+def check_command_owners(commands: dict[str, list[Command[Any]]]) -> list[str]:
+    """Problems across plug-ins: each top-level command name has one owner.
+
+    `commands` maps plug-in names to their commands.
+    """
+    owners: dict[str, set[str]] = {}
+    for plugin, declared in commands.items():
+        for command in declared:
+            if command.path:
+                owners.setdefault(command.path[0], set()).add(plugin)
+    return [
+        f"/{top} is declared by more than one plug-in: {', '.join(sorted(names))}"
+        for top, names in sorted(owners.items())
+        if len(names) > 1
+    ]
 
 
 def _check_schedule(schedule: Schedule, job_type: JobType[Any] | None) -> list[str]:

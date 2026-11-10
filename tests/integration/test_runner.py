@@ -18,23 +18,38 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from guildhall.contract import (
     Archive,
+    Command,
+    CommandOutcome,
     Context,
     ContractModel,
+    Invocation,
     Job,
     JobSpec,
     JobType,
+    Message,
     Outcome,
+    PermanentError,
     RateLimitPolicy,
+    RetryableError,
     SourcePlugin,
 )
+from guildhall.platform.accounts import linked_accounts
 from guildhall.platform.archive import ArchiveError
+from guildhall.platform.command_jobs import CommandJob, command_spec
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.dedupe import processed_jobs
 from guildhall.platform.envelope import JobEnvelope
 from guildhall.platform.http import HttpSettings, UpstreamHttp, new_client
 from guildhall.platform.outbox import outbox_events, outbox_jobs
 from guildhall.platform.queue import ReceivedMessage
-from guildhall.platform.runner import JobRunner, RunnerSettings, RunResult, Status
+from guildhall.platform.replies import outbox_replies
+from guildhall.platform.runner import (
+    COMMAND_FAILED,
+    JobRunner,
+    RunnerSettings,
+    RunResult,
+    Status,
+)
 from guildhall.plugins.synthetic import SyntheticPlugin, records
 
 type LogLines = Callable[[], list[dict[str, Any]]]
@@ -647,3 +662,209 @@ async def test_an_upstream_server_error_is_an_ordinary_retry(
         Status.RETRYING, "RetryableError: GET upstream.test/x answered 503"
     )
     assert queue.sent == []
+
+
+# Slash commands run as jobs (docs/adr/0063, 0064).
+
+
+class WhoOptions(ContractModel):
+    pass
+
+
+class Accounting(SourcePlugin):
+    """A plug-in whose command says which account the caller linked."""
+
+    name = "accounting"
+    rate_limit = RateLimitPolicy(per_minute=60, per_day=1000)
+
+    def job_types(self) -> list[JobType[Any]]:
+        return []
+
+    def commands(self) -> list[Command[Any]]:
+        return [
+            Command(("who",), "Who am I", WhoOptions, self.who),
+            Command(("broken",), "Always fails for good", WhoOptions, self.broken),
+            Command(("flaky",), "Always fails, worth a retry", WhoOptions, self.flaky),
+        ]
+
+    async def broken(
+        self, invocation: Invocation[WhoOptions], ctx: Context
+    ) -> CommandOutcome:
+        raise PermanentError("this command cannot work")
+
+    async def flaky(
+        self, invocation: Invocation[WhoOptions], ctx: Context
+    ) -> CommandOutcome:
+        raise RetryableError("try again")
+
+    async def who(
+        self, invocation: Invocation[WhoOptions], ctx: Context
+    ) -> CommandOutcome:
+        account = invocation.account
+        linked = account.external_id if account else "nobody"
+        return CommandOutcome(reply=Message(content=f"linked: {linked}"))
+
+
+def command(
+    run_id: str,
+    path: tuple[str, ...] = ("synthetic", "echo"),
+    options: dict[str, Any] | None = None,
+    plugin: str = "synthetic",
+    user: str = "user-1",
+) -> str:
+    job = CommandJob(
+        path=path,
+        discord_user_id=user,
+        options={"text": "hello"} if options is None else options,
+        application_id="app-1",
+        interaction_token=f"token-{run_id}",
+        private=False,
+    )
+    return JobEnvelope.from_spec(
+        plugin, command_spec(plugin, f"interaction-{run_id}", job)
+    ).model_dump_json()
+
+
+@pytest.fixture
+async def replies(engine: AsyncEngine, run_id: str) -> AsyncIterator[None]:
+    yield
+    async with engine.begin() as connection:
+        await connection.execute(
+            delete(outbox_replies).where(
+                outbox_replies.c.interaction_token.contains(run_id)
+            )
+        )
+
+
+async def queued_replies(engine: AsyncEngine, run_id: str) -> list[Any]:
+    async with engine.connect() as connection:
+        rows = await connection.execute(
+            select(outbox_replies).where(
+                outbox_replies.c.interaction_token == f"token-{run_id}"
+            )
+        )
+        return list(rows)
+
+
+async def test_a_command_commits_its_reply_with_its_claim(
+    runner: JobRunner, queue: FakeQueue, engine: AsyncEngine, run_id: str, replies: None
+) -> None:
+    result = await runner.run(message(command(run_id)))
+    assert result == RunResult(Status.DONE)
+    [reply] = await queued_replies(engine, run_id)
+    assert (reply.application_id, reply.message) == ("app-1", {"content": "hello"})
+    assert reply.sent_at is None
+    assert await count(engine, processed_jobs, run_id) == 1
+    assert len(queue.deleted) == 1
+
+
+async def test_a_command_delivered_twice_replies_once(
+    runner: JobRunner, engine: AsyncEngine, run_id: str, replies: None
+) -> None:
+    body = command(run_id)
+    assert await runner.run(message(body)) == RunResult(Status.DONE)
+    assert await runner.run(message(body)) == RunResult(Status.DUPLICATE)
+    assert len(await queued_replies(engine, run_id)) == 1
+
+
+async def test_a_command_with_invalid_options_is_dead_lettered(
+    runner: JobRunner, queue: FakeQueue, engine: AsyncEngine, run_id: str, replies: None
+) -> None:
+    result = await runner.run(message(command(run_id, options={})))
+    assert result.status is Status.DEAD_LETTERED
+    assert result.reason == "invalid options: text: Field required"
+    [reply] = await queued_replies(engine, run_id)
+    assert reply.message == {"content": COMMAND_FAILED}
+
+
+async def test_a_command_the_plugin_no_longer_has_is_dead_lettered(
+    runner: JobRunner, run_id: str, replies: None
+) -> None:
+    result = await runner.run(message(command(run_id, path=("synthetic", "shout"))))
+    assert result.status is Status.DEAD_LETTERED
+    assert result.reason == "unknown command /synthetic shout for 'synthetic'"
+
+
+@pytest.fixture
+async def linked(engine: AsyncEngine, run_id: str) -> AsyncIterator[str]:
+    """A Discord user with a linked account for the accounting plug-in."""
+    user = f"user-{run_id}"
+    async with engine.begin() as connection:
+        await connection.execute(
+            insert(linked_accounts).values(
+                plugin="accounting", discord_user_id=user, external_id="acct-77"
+            )
+        )
+    yield user
+    async with engine.begin() as connection:
+        await connection.execute(
+            delete(linked_accounts).where(linked_accounts.c.discord_user_id == user)
+        )
+
+
+async def test_a_command_sees_the_callers_linked_account(
+    engine: AsyncEngine,
+    queue: FakeQueue,
+    archive: FakeArchive,
+    http: UpstreamHttp,
+    cleanup: None,
+    replies: None,
+    run_id: str,
+    linked: str,
+) -> None:
+    runner = JobRunner(
+        {"accounting": Accounting()}, engine, queue, archive, http, RunnerSettings()
+    )
+    for user, expected in ((linked, "linked: acct-77"), ("stranger", "linked: nobody")):
+        body = command(
+            f"{run_id}-{user}",
+            path=("who",),
+            options={},
+            plugin="accounting",
+            user=user,
+        )
+        assert await runner.run(message(body)) == RunResult(Status.DONE)
+        [reply] = await queued_replies(engine, f"{run_id}-{user}")
+        assert reply.message == {"content": expected}
+
+
+@pytest.fixture
+def accounting_runner(
+    engine: AsyncEngine,
+    queue: FakeQueue,
+    archive: FakeArchive,
+    http: UpstreamHttp,
+    cleanup: None,
+    replies: None,
+) -> JobRunner:
+    settings = RunnerSettings(max_receive_count=3)
+    return JobRunner(
+        {"accounting": Accounting()}, engine, queue, archive, http, settings
+    )
+
+
+def accounting(run_id: str, name: str) -> str:
+    return command(run_id, path=(name,), options={}, plugin="accounting")
+
+
+async def test_a_command_that_fails_for_good_replies_with_an_error(
+    accounting_runner: JobRunner, engine: AsyncEngine, run_id: str
+) -> None:
+    result = await accounting_runner.run(message(accounting(run_id, "broken")))
+    assert result.status is Status.DEAD_LETTERED
+    [reply] = await queued_replies(engine, run_id)
+    assert reply.message == {"content": COMMAND_FAILED}
+
+
+async def test_a_failing_command_replies_with_an_error_only_on_its_last_receive(
+    accounting_runner: JobRunner, engine: AsyncEngine, run_id: str
+) -> None:
+    body = accounting(run_id, "flaky")
+    for receive_count in (1, 2):
+        result = await accounting_runner.run(message(body, receive_count))
+        assert result.status is Status.RETRYING
+        assert await queued_replies(engine, run_id) == []
+    result = await accounting_runner.run(message(body, receive_count=3))
+    assert result.status is Status.RETRYING  # SQS dead-letters it after this
+    [reply] = await queued_replies(engine, run_id)
+    assert reply.message == {"content": COMMAND_FAILED}

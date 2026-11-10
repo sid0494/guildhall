@@ -7,7 +7,7 @@ behaviour, so plug-ins depend on the contract and nothing else.
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 from sqlalchemy import MetaData
@@ -16,6 +16,9 @@ from guildhall.contract.archive import RawArchive
 from guildhall.contract.http import Http
 from guildhall.contract.models import Job, Outcome, RateLimitPolicy, Schedule
 from guildhall.contract.storage import Database, plugin_metadata
+
+if TYPE_CHECKING:
+    from guildhall.contract.commands import Command
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,10 @@ class SourcePlugin(ABC):
 
     def schedules(self) -> list[Schedule]:
         """Recurring triggers; none by default."""
+        return []
+
+    def commands(self) -> list[Command[Any]]:
+        """Slash commands; none by default."""
         return []
 
     @property

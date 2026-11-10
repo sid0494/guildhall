@@ -15,12 +15,16 @@ from sqlalchemy import Column, DateTime, Integer, Table, Text, func, insert
 
 from guildhall.contract import (
     Archive,
+    Command,
+    CommandOutcome,
     Context,
     ContractModel,
     Event,
+    Invocation,
     Job,
     JobSpec,
     JobType,
+    Message,
     Outcome,
     PermanentError,
     RateLimitPolicy,
@@ -71,6 +75,12 @@ class SyntheticWork(ContractModel):
     archive: bool = False
 
 
+class EchoOptions(ContractModel):
+    """Options of `/synthetic echo` and `/synthetic whisper`, drill commands."""
+
+    text: str = Field(min_length=1, max_length=200, description="What to say back")
+
+
 class WorkDone(Event):
     """Emitted by a finished synthetic job."""
 
@@ -87,6 +97,26 @@ class SyntheticPlugin(SourcePlugin):
 
     def job_types(self) -> list[JobType[Any]]:
         return [JobType("work", SyntheticWork, self.work)]
+
+    def commands(self) -> list[Command[Any]]:
+        return [
+            Command(
+                ("synthetic", "echo"), "Say something back", EchoOptions, self.echo
+            ),
+            Command(
+                ("synthetic", "whisper"),
+                "Say something back, only to you",
+                EchoOptions,
+                self.echo,
+                private=True,
+            ),
+        ]
+
+    async def echo(
+        self, invocation: Invocation[EchoOptions], ctx: Context
+    ) -> CommandOutcome:
+        """Replies with the text: exercises commands end to end."""
+        return CommandOutcome(reply=Message(content=invocation.options.text))
 
     async def work(self, job: Job[SyntheticWork], ctx: Context) -> Outcome:
         work = job.payload

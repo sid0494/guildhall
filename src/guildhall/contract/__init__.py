@@ -4,6 +4,13 @@ Plug-ins import from this package only, never from `guildhall.platform`.
 """
 
 from guildhall.contract.archive import RawArchive
+from guildhall.contract.commands import (
+    Command,
+    CommandHandler,
+    CommandOutcome,
+    Invocation,
+    Message,
+)
 from guildhall.contract.errors import PermanentError, RetryableError
 from guildhall.contract.http import Http, HttpResponse
 from guildhall.contract.models import (
@@ -23,6 +30,9 @@ from guildhall.contract.storage import Database, plugin_metadata
 
 __all__ = [
     "Archive",
+    "Command",
+    "CommandHandler",
+    "CommandOutcome",
     "Context",
     "ContractModel",
     "Database",
@@ -30,10 +40,12 @@ __all__ = [
     "Handler",
     "Http",
     "HttpResponse",
+    "Invocation",
     "Job",
     "JobSpec",
     "JobType",
     "LinkedAccount",
+    "Message",
     "Outcome",
     "PermanentError",
     "RateLimitPolicy",

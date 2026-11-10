@@ -106,3 +106,9 @@ def test_archive_keeps_the_payload_as_the_raw_response() -> None:
 
 def test_work_archives_nothing_unless_asked_to() -> None:
     assert run(SyntheticWork(work_id="a", record=True)).archives == ()
+
+
+def test_echo_replies_publicly_and_whisper_privately() -> None:
+    commands = {command.path: command for command in SyntheticPlugin().commands()}
+    assert commands[("synthetic", "echo")].private is False
+    assert commands[("synthetic", "whisper")].private is True

@@ -4,7 +4,9 @@ The platform never imports plug-ins and plug-ins never import the platform;
 entry points such as the worker call these functions to join the two.
 """
 
+import argparse
 import asyncio
+import json
 import signal
 import sys
 from collections.abc import AsyncIterator, Mapping
@@ -17,14 +19,27 @@ from fastapi import FastAPI
 from guildhall.api.app import ApiSettings, create_app
 from guildhall.contract import SourcePlugin
 from guildhall.platform.archive import ArchiveSettings, open_archive
+from guildhall.platform.command_jobs import command_routes
+from guildhall.platform.command_schema import commands_of, discord_commands
 from guildhall.platform.consumer import ConsumerSettings, JobConsumer
 from guildhall.platform.database import DatabaseSettings, create_engine
+from guildhall.platform.discord import (
+    DiscordSettings,
+    open_discord,
+    register_commands,
+)
 from guildhall.platform.http import HttpSettings, open_upstream_http
 from guildhall.platform.interactions import InteractionPruner, PostgresInteractionLog
 from guildhall.platform.logs import LogSettings, configure_logging
 from guildhall.platform.queue import QueueSettings, open_job_queue
 from guildhall.platform.registry import build_registry
 from guildhall.platform.relay import OutboxRelay, RelaySettings
+from guildhall.platform.reply_dispatcher import (
+    ReplyDispatcher,
+    ReplyPruner,
+    ReplySettings,
+    open_interaction_webhooks,
+)
 from guildhall.platform.runner import JobRunner, RunnerSettings
 from guildhall.platform.scheduler import Scheduler
 from guildhall.platform.settings import Settings
@@ -49,6 +64,7 @@ async def run_worker(stop: asyncio.Event) -> None:
             open_job_queue(QueueSettings()) as queue,
             open_archive(ArchiveSettings()) as archive,
             open_upstream_http(HttpSettings()) as http,
+            open_interaction_webhooks() as webhooks,
         ):
             runner = JobRunner(plugins, engine, queue, archive, http, RunnerSettings())
             worker = Worker(
@@ -56,7 +72,8 @@ async def run_worker(stop: asyncio.Event) -> None:
                 OutboxRelay(engine, queue, RelaySettings()),
                 Scheduler(plugins, engine),
                 WorkerSettings(),
-                pruners=(InteractionPruner(engine),),
+                pruners=(InteractionPruner(engine), ReplyPruner(engine)),
+                dispatchers=(ReplyDispatcher(engine, webhooks, ReplySettings()),),
             )
             _log.info(
                 "worker started",
@@ -111,6 +128,7 @@ def api_main() -> None:
     """
     configure_logging(LogSettings())
     settings = ApiSettings()
+    routes = command_routes(load_plugins(Settings()))
     engine = create_engine(DatabaseSettings())
 
     @asynccontextmanager
@@ -119,9 +137,35 @@ def api_main() -> None:
         await engine.dispose()
 
     uvicorn.run(
-        create_app(settings, PostgresInteractionLog(engine), lifespan),
+        create_app(settings, PostgresInteractionLog(engine), routes, lifespan),
         host=settings.api_host,
         port=settings.api_port,
         log_config=None,
         access_log=False,
     )
+
+
+def register_commands_main() -> None:
+    """The `guildhall-register-commands` command (docs/adr/0065).
+
+    Makes the test server's slash commands match the enabled plug-ins'. With
+    `--dry-run`, prints what would be sent and calls nothing.
+    """
+    parser = argparse.ArgumentParser(description=register_commands_main.__doc__)
+    parser.add_argument(
+        "--dry-run", action="store_true", help="print the commands; call nothing"
+    )
+    arguments = parser.parse_args()
+    configure_logging(LogSettings())
+    commands = discord_commands(commands_of(load_plugins(Settings())))
+    if arguments.dry_run:
+        print(json.dumps(commands, indent=2))
+        return
+    settings = DiscordSettings()
+
+    async def register() -> int:
+        async with open_discord(settings) as client:
+            return await register_commands(client, settings, commands)
+
+    count = asyncio.run(register())
+    _log.info("commands registered", count=count)
