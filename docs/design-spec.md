@@ -148,7 +148,7 @@ async def fetch_match(self, job: Job[FetchMatch], ctx: Context) -> Outcome:
 - Every job and event has a `dedupe_key`, namespaced by plug-in name. The platform guarantees each key takes effect once.
 - Errors are typed. `RetryableError` goes back on the queue with exponential backoff and jitter; `PermanentError` goes to the dead-letter queue with its reason. A payload that fails validation is dead-lettered before plug-in code runs. Handlers run under a timeout ([ADR 0018](adr/0018-job-runner.md)).
 - Handlers share one event loop with the other jobs in their worker: they await I/O and move CPU-heavy work to `asyncio.to_thread`, or every job in the process stalls ([ADR 0021](adr/0021-worker-concurrency.md)).
-- Each plug-in has its own rate-limit budget, so Side Quest checking prices can't eat Gank Report's OpenDota budget. Errors and logs about upstream calls never include query strings or headers, where API keys go.
+- Each plug-in has its own rate-limit budget, so Side Quest checking prices can't eat Gank Report's OpenDota budget. Errors and logs about upstream calls never include query strings or headers, where API keys go, and show all-digit path segments, often personal IDs, as `{n}` ([ADR 0050](adr/0050-numeric-path-segments-are-masked.md)).
 - Each plug-in owns its tables, named `<plug-in>_...`, and never reads or writes another's. Every statement it reads or writes with is checked: tables it doesn't declare and raw SQL text are refused and dead-lettered as contract violations. Likewise it reaches only its own archived responses: the platform adds the `raw/<plug-in>/` prefix, and a kind or id that could leave it is a contract violation.
 - Events carry `type` and `schema_version`. Within a version, changes are additive only; consumers ignore unknown fields.
 - Available plug-ins are listed in one catalogue (`guildhall.plugins.CATALOGUE`); the enabled ones are named in `GUILDHALL_PLUGINS`. Disabling one is a config change, not a code change, and the platform refuses to start if a name is unknown ([ADR 0011](adr/0011-settings-and-plugin-catalogue.md)).
@@ -180,7 +180,7 @@ Metrics live in a registry of small functions (`match_json → value or missing`
 
 A match is fetched once, whoever played in it; each linked account in it is then analysed from the archived response, so friends in one match cost one fetch and a metric change is recomputed without calling OpenDota ([ADR 0043](adr/0043-fetch-per-match-analyse-per-account.md)).
 
-1. Every 15 minutes, a scheduled `poll_matches` job fetches each linked account's recent matches and, per new match, returns a `fetch_match` job keyed `gank_report:match:<id>` and an `analyze_match` job keyed `gank_report:analyze:<id>:<link id>`.
+1. Every 15 minutes, a scheduled `poll_matches` job lists each linked account's 20 newest matches of the past year, Turbo included, and keeps the tracked ones ([ADR 0051](adr/0051-tracked-modes-normal-and-turbo.md)). For each one not yet polled for that account, it returns a `fetch_match` job keyed `gank_report:match:<id>` and an `analyze_match` job keyed `gank_report:analyze:<id>:<link id>`, delayed 5 minutes, and marks the match as polled in the same transaction, so each match is queued once per account ([ADR 0052](adr/0052-polls-queue-each-match-once.md)).
 2. `fetch_match` gets the full match. While it is unparsed, it requests a parse and waits 5, then 10 minutes; the third attempt finishes either way, so parsed-only metrics may be missing. Parsing usually takes 1–5 minutes, and some matches never parse ([ADR 0044](adr/0044-parse-retry-policy.md)).
 3. When it finishes, it archives the raw JSON to S3 and records the match row. Responses are read through models of just the fields used; an unexpected one fails permanently, naming fields but never values ([ADR 0047](adr/0047-opendota-response-models.md)).
 4. `analyze_match` waits, checking every 5 minutes for up to about two hours, until the match row exists; then it reads the archived match and records the account's part in it ([ADR 0046](adr/0046-analysis-waits-for-the-fetch.md)).
@@ -188,13 +188,15 @@ A match is fetched once, whoever played in it; each linked account in it is then
 
 ### Reports
 
-- **Post-match:** hero, result, each focus metric with an arrow against my rolling average on that hero.
-- **Weekly (Sunday):** per focus metric, this week vs. the previous four, plus the best and worst game of the week.
+Matches are tracked as one of two kinds, which reports never mix: **normal** (ranked and unranked together: the balanced draft modes in unranked, ranked and Battle Cup lobbies) and **Turbo**, whose economy and pace differ. Other modes, private and tournament lobbies, bot games and games shorter than five minutes are not tracked ([ADR 0051](adr/0051-tracked-modes-normal-and-turbo.md)).
+
+- **Post-match:** hero, result, each focus metric with an arrow against my rolling average on that hero in the same kind.
+- **Weekly (Sunday):** one section per kind I played at least one match of that week; in each, per focus metric, this week vs. the previous four, plus the best and worst game of the week.
 - **On demand:** `/match last` and `/trend [hero] [weeks]`.
 
 ### Backfill
 
-Linking an account backfills the last 100 matches so trends work from day one. That burst is the main reason the rate limiter exists: steady use is only about 30 calls a day.
+Linking an account backfills the last 100 matches so trends work from day one; it comes with `/link`. The poll already reaches back a year, 20 matches at most, so backfill covers what is older or beyond those 20, and can skip asking for parses of matches too old to have a replay. That burst is the main reason the rate limiter exists: steady use is only about 30 calls a day.
 
 ## Side Quest (Steam backlog and deals)
 
@@ -291,7 +293,8 @@ Platform tables are shared; each plug-in owns tables prefixed with its name. Raw
 | `outbox_jobs` | Platform | `id`, `dedupe_key`, `body` (job envelope), `delay_seconds`, `sent_at` | Follow-up jobs waiting for the relay to send them to SQS ([ADR 0017](adr/0017-queue-client-and-outbox-tables.md)) |
 | `interactions_seen` | Platform | `interaction_id` (primary key), `received_at` | Discord retry dedupe |
 | `synthetic_records` | Synthetic | `work_id`, `attempt`, `recorded_at` | Written by synthetic jobs that ask to be recorded; exercises plug-in storage in tests and drills |
-| `gank_report_matches` | Gank Report | `match_id`, `played_at`, `duration_seconds`, `game_mode`, `lobby_type`, `parsed`, `fetched_at` | One row per match, written when its fetch is final ([ADR 0045](adr/0045-gank-report-tables.md)) |
+| `gank_report_matches` | Gank Report | `match_id`, `played_at`, `duration_seconds`, `game_mode`, `lobby_type`, `mode` (`normal` or `turbo`), `parsed`, `fetched_at` | One row per match, written when its fetch is final ([ADR 0045](adr/0045-gank-report-tables.md), [ADR 0051](adr/0051-tracked-modes-normal-and-turbo.md)) |
+| `gank_report_polled_matches` | Gank Report | `account_id`, `match_id` (together the primary key), `polled_at` | Matches already queued per account ([ADR 0052](adr/0052-polls-queue-each-match-once.md)) |
 | `gank_report_player_matches` | Gank Report | `match_id`, `account_id` (Dota account; together the primary key), `hero_id`, `player_slot`, `won`, `analyzed_at` | One linked account's part in a match ([ADR 0045](adr/0045-gank-report-tables.md)) |
 | `gank_report_metrics` | Gank Report | `match_id`, `account_id`, `metric`, `value` | Long format, so new metrics need no migration |
 | `gank_report_focus` | Gank Report | `discord_user_id`, `metric` | Chosen skills |
