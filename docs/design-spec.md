@@ -98,7 +98,7 @@ guildhall/
 
 All Python code is one `guildhall` package in a src layout, so `guildhall.platform` never shadows the standard library's `platform` module ([ADR 0003](adr/0003-single-package-src-layout.md)).
 
-**Stack:** Python 3.14 managed with uv ([ADR 0002](adr/0002-python-3-14-and-uv.md)), FastAPI, PostgreSQL through SQLAlchemy Core and psycopg 3 with Alembic migrations ([ADR 0013](adr/0013-database-access.md)), Redis, AWS SQS and S3, Docker, Kubernetes, Terraform, GitHub Actions.
+**Stack:** Python 3.14 managed with uv ([ADR 0002](adr/0002-python-3-14-and-uv.md)), FastAPI, PostgreSQL through SQLAlchemy Core and psycopg 3 with Alembic migrations ([ADR 0013](adr/0013-database-access.md)), the api on FastAPI and uvicorn ([ADR 0058](adr/0058-fastapi-and-uvicorn.md)), Redis, AWS SQS and S3, Docker, Kubernetes, Terraform, GitHub Actions.
 
 ## Plug-in contract
 
@@ -254,7 +254,7 @@ If Rune Ledger fits without platform changes, the contract is in good shape.
 
 ## Discord interface
 
-Guildhall uses Discord's HTTP interactions endpoint, not a persistent gateway connection. Slash commands arrive as signed HTTPS requests to the api, so the bot is a stateless endpoint behind the load balancer and scales like any other web service. A gateway bot would need one long-lived websocket with reconnects and session state.
+Guildhall uses Discord's HTTP interactions endpoint, not a persistent gateway connection. Slash commands arrive as signed HTTPS requests to the api, so the bot is a stateless endpoint behind the load balancer and scales like any other web service. A gateway bot would need one long-lived websocket with reconnects and session state ([ADR 0057](adr/0057-http-interactions-not-a-gateway.md)).
 
 ### Commands
 
@@ -273,12 +273,12 @@ Guildhall uses Discord's HTTP interactions endpoint, not a persistent gateway co
 
 ### Endpoint rules
 
-- **Verify every request.** Check `X-Signature-Ed25519` against the timestamp plus the raw body with the app's public key; reject with `401` on failure. Answer `PING` with `PONG`; Discord uses it to validate the URL.
+- **Verify every request.** Check `X-Signature-Ed25519` against the timestamp plus the raw body with the app's public key (`cryptography`'s Ed25519); reject with `401` on failure, including a missing or malformed header, and log nothing of a rejected request. Answer `PING` with `PONG`; Discord uses it to validate the URL, and also sends badly signed requests to check they are refused. No freshness check on the timestamp: deduplication makes replays harmless ([ADR 0059](adr/0059-interaction-signatures.md)).
 - **Respond within 3 seconds.** Slow commands return a deferred response at once and enqueue a job; the worker sends the real reply within 15 minutes. `/link` and `/trend` always take this path.
-- **Deduplicate by interaction ID.** Discord can retry on network errors, so record the ID under a unique constraint before any side effect.
+- **Deduplicate by interaction ID.** Discord can retry on network errors, so record the ID under a unique constraint before any side effect, in the same transaction as it; a retry gets the same answer and does nothing again. If the ID cannot be recorded, answer `503`. IDs are pruned after a week ([ADR 0061](adr/0061-interactions-endpoint-flow.md)).
 - **Proactive messages** (match reports, weekly trends, sale alerts) are not interactions. The outbox dispatcher posts them to a configured channel through the Discord API with the bot token.
 
-Local development uses a tunnel (cloudflared or ngrok) so Discord can reach docker-compose.
+Local development uses an ngrok tunnel on a free static domain, so Discord can reach docker-compose at a URL that never changes ([ADR 0060](adr/0060-ngrok-tunnel.md)). Only commands need it: posts are outbound calls. The api also serves `/healthz` (liveness) and `/readyz` (Postgres answers); its interactive API docs are off.
 
 ## Data model
 
@@ -291,7 +291,7 @@ Platform tables are shared; each plug-in owns tables prefixed with its name. Raw
 | `processed_jobs` | Platform | `dedupe_key` (primary key), `completed_at` | A job key takes effect once |
 | `outbox_events` | Platform | `id`, `plugin`, `dedupe_key` (unique), `type`, `schema_version`, `payload`; from M2 also `status`, `attempts`, `discord_message_id` | Events waiting for Discord delivery |
 | `outbox_jobs` | Platform | `id`, `dedupe_key`, `body` (job envelope), `delay_seconds`, `sent_at` | Follow-up jobs waiting for the relay to send them to SQS ([ADR 0017](adr/0017-queue-client-and-outbox-tables.md)) |
-| `interactions_seen` | Platform | `interaction_id` (primary key), `received_at` | Discord retry dedupe |
+| `interactions_seen` | Platform | `interaction_id` (primary key), `received_at` | Discord retry dedupe; pruned after 7 days ([ADR 0061](adr/0061-interactions-endpoint-flow.md)) |
 | `synthetic_records` | Synthetic | `work_id`, `attempt`, `recorded_at` | Written by synthetic jobs that ask to be recorded; exercises plug-in storage in tests and drills |
 | `gank_report_matches` | Gank Report | `match_id`, `played_at`, `duration_seconds`, `game_mode`, `lobby_type`, `mode` (`normal` or `turbo`), `parsed`, `fetched_at` | One row per match, written when its fetch is final ([ADR 0045](adr/0045-gank-report-tables.md), [ADR 0051](adr/0051-tracked-modes-normal-and-turbo.md)) |
 | `gank_report_polled_matches` | Gank Report | `account_id`, `match_id` (together the primary key), `polled_at` | Matches already queued per account ([ADR 0052](adr/0052-polls-queue-each-match-once.md)) |
@@ -435,7 +435,7 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 - [x] `poll_matches`, `fetch_match`, parse-retry, S3 archive, `analyze_match`, metric registry
 - [x] Per-plug-in rate limiter with backoff
 - [ ] Discord endpoint, `/link`, `/match last`, outbox dispatcher
-- [ ] api service in docker-compose
+- [x] api service in docker-compose
 
 **Done when:** I play a match and the report shows up in Discord on its own.
 
@@ -487,7 +487,7 @@ Pending decisions have no number until their record is written; the ADR column t
 | Decision | Current leaning | ADR |
 | --- | --- | --- |
 | Plug-in contract shape and what the platform owns | ABC with declared job types, own package | [0008](adr/0008-plugin-contract-shape.md) |
-| HTTP interactions endpoint vs. gateway bot | HTTP endpoint | Pending |
+| HTTP interactions endpoint vs. gateway bot | HTTP endpoint | [0057](adr/0057-http-interactions-not-a-gateway.md) |
 | Job dedupe in Postgres vs. SQS FIFO deduplication | Postgres `processed_jobs` (works with standard queues and outlives FIFO's dedupe window) | [0014](adr/0014-job-dedupe-in-postgres.md) |
 | Side Quest alert dedupe key | Game, shop, price, deal expiry | Pending |
 | Outbound limiter fails closed when Redis is down | Fail closed | [0034](adr/0034-shared-rate-limits-in-redis.md) |
