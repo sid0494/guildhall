@@ -34,6 +34,7 @@ from guildhall.platform.checks import (
     job_types_by_name,
 )
 from guildhall.plugins import CATALOGUE
+from guildhall.plugins.gank_report import GankReportPlugin
 from guildhall.plugins.synthetic import SyntheticPlugin, SyntheticWork
 
 
@@ -56,6 +57,7 @@ class PluginCase:
 
 
 CASES = [
+    PluginCase(GankReportPlugin(), {}),
     PluginCase(
         SyntheticPlugin(),
         {
