@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from guildhall.api.app import ApiSettings, create_app
 from guildhall.contract import SourcePlugin
 from guildhall.platform.archive import ArchiveSettings, open_archive
+from guildhall.platform.command_jobs import command_routes
 from guildhall.platform.command_schema import commands_of, discord_commands
 from guildhall.platform.consumer import ConsumerSettings, JobConsumer
 from guildhall.platform.database import DatabaseSettings, create_engine
@@ -119,6 +120,7 @@ def api_main() -> None:
     """
     configure_logging(LogSettings())
     settings = ApiSettings()
+    routes = command_routes(load_plugins(Settings()))
     engine = create_engine(DatabaseSettings())
 
     @asynccontextmanager
@@ -127,7 +129,7 @@ def api_main() -> None:
         await engine.dispose()
 
     uvicorn.run(
-        create_app(settings, PostgresInteractionLog(engine), lifespan),
+        create_app(settings, PostgresInteractionLog(engine), routes, lifespan),
         host=settings.api_host,
         port=settings.api_port,
         log_config=None,

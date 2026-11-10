@@ -12,9 +12,11 @@ from typing import Final
 from sqlalchemy import Column, DateTime, Table, Text, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from guildhall.contract import JobSpec
 from guildhall.platform.database import metadata
+from guildhall.platform.outbox import add_jobs
 
 RETENTION: Final = timedelta(days=7)
 
@@ -38,20 +40,20 @@ class PostgresInteractionLog:
         self._engine = engine
 
     async def first_time(self, interaction_id: str) -> bool:
-        """Record the ID; False if it was already recorded.
-
-        An INSERT's row count cannot be trusted here, so `RETURNING` tells a
-        new row from a conflict.
-        """
-        statement = (
-            insert(interactions_seen)
-            .values(interaction_id=interaction_id)
-            .on_conflict_do_nothing(index_elements=[interactions_seen.c.interaction_id])
-            .returning(interactions_seen.c.interaction_id)
-        )
+        """Record the ID; False if it was already recorded."""
         async with self._engine.begin() as connection:
-            result = await connection.execute(statement)
-            return result.first() is not None
+            return await _record(connection, interaction_id)
+
+    async def accept_command(
+        self, interaction_id: str, plugin: str, spec: JobSpec
+    ) -> bool:
+        """Record the ID and queue the command's job in one transaction, so a
+        crash between the two can neither lose the command nor run it twice."""
+        async with self._engine.begin() as connection:
+            if not await _record(connection, interaction_id):
+                return False
+            await add_jobs(connection, plugin, [spec])
+            return True
 
     async def is_ready(self) -> bool:
         """Whether Postgres answers."""
@@ -79,3 +81,16 @@ class InteractionPruner:
                 )
             )
         return result.rowcount
+
+
+async def _record(connection: AsyncConnection, interaction_id: str) -> bool:
+    """Insert the ID; True if it was new. An INSERT's row count cannot be
+    trusted here, so `RETURNING` tells a new row from a conflict."""
+    statement = (
+        insert(interactions_seen)
+        .values(interaction_id=interaction_id)
+        .on_conflict_do_nothing(index_elements=[interactions_seen.c.interaction_id])
+        .returning(interactions_seen.c.interaction_id)
+    )
+    result = await connection.execute(statement)
+    return result.first() is not None

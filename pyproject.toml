@@ -48,7 +48,10 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # pytest's assert statements are how tests check results
+"tests/**" = [
+    "S101",  # pytest's assert statements are how tests check results
+    "S105", "S106",  # stand-in tokens are test data; gitleaks guards real secrets
+]
 
 [tool.mypy]
 strict = true

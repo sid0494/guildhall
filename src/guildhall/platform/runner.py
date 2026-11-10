@@ -9,7 +9,7 @@ import asyncio
 import logging
 import math
 import random
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
@@ -24,11 +24,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from guildhall.contract import (
     Context,
     Http,
+    Invocation,
     Job,
+    LinkedAccount,
+    Message,
     Outcome,
     PermanentError,
     SourcePlugin,
 )
+from guildhall.platform.accounts import linked_accounts
 from guildhall.platform.archive import (
     ArchiveError,
     ArchiveStore,
@@ -41,12 +45,14 @@ from guildhall.platform.checks import (
     check_outcome,
     job_types_by_name,
 )
+from guildhall.platform.command_jobs import CommandJob, commands_by_path, is_command
 from guildhall.platform.dedupe import claim, processed_jobs
 from guildhall.platform.envelope import JobEnvelope
 from guildhall.platform.http import ThrottledError
 from guildhall.platform.logs import bind_job
 from guildhall.platform.outbox import add_events, add_jobs
 from guildhall.platform.queue import ReceivedMessage
+from guildhall.platform.replies import add_reply
 from guildhall.platform.storage import PluginDatabase
 
 _RANDOM = random.SystemRandom()
@@ -100,6 +106,15 @@ class Status(StrEnum):
 class RunResult:
     status: Status
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Reply:
+    """A command's reply, queued with the command's outcome (docs/adr/0064)."""
+
+    application_id: str
+    interaction_token: str
+    message: Message
 
 
 _LEVELS = {
@@ -184,6 +199,8 @@ class JobRunner:
             return await self._dead_letter(
                 message, f"plug-in {envelope.plugin!r} is not enabled"
             )
+        if is_command(envelope.type):
+            return await self._run_command(message, envelope, attempt, plugin)
         job_type = job_types_by_name(plugin).get(envelope.type)
         if job_type is None:
             return await self._dead_letter(
@@ -215,22 +232,11 @@ class JobRunner:
             dedupe_key=envelope.dedupe_key,
             attempt=attempt,
         )
-        try:
-            async with asyncio.timeout(self._settings.job_timeout_seconds):
-                outcome = await job_type.handler(job, context)
-        except PermanentError as error:
-            return await self._dead_letter(message, f"permanent error: {error}")
-        except ContractViolationError as error:
-            return await self._dead_letter(message, f"contract violation: {error}")
-        except ThrottledError as error:
-            return await self._defer(message, envelope, attempt, error)
-        except TimeoutError:
-            return await self._retry(
-                message, f"timed out after {self._settings.job_timeout_seconds} s"
-            )
-        except Exception as error:  # RetryableError and unexpected failures alike
-            _log.warning("handler raised", exc_info=error)
-            return await self._retry(message, f"{type(error).__name__}: {error}")
+        outcome = await self._invoke(
+            message, envelope, attempt, lambda: job_type.handler(job, context)
+        )
+        if isinstance(outcome, RunResult):
+            return outcome
 
         problems = check_outcome(plugin, outcome)
         if problems:
@@ -268,6 +274,117 @@ class JobRunner:
         await self._queue.delete(message)
         return RunResult(Status.DONE if committed else Status.DUPLICATE)
 
+    async def _run_command(
+        self,
+        message: ReceivedMessage,
+        envelope: JobEnvelope,
+        attempt: int,
+        plugin: SourcePlugin,
+    ) -> RunResult:
+        """Run a slash command's handler; its reply commits with its outcome."""
+        try:
+            if await self._already_processed(envelope.dedupe_key):
+                await self._queue.delete(message)
+                return RunResult(Status.DUPLICATE)
+        except SQLAlchemyError as error:
+            return await self._retry(message, f"database error: {type(error).__name__}")
+        try:
+            job = CommandJob.model_validate(envelope.payload)
+        except ValidationError as error:
+            return await self._dead_letter(
+                message, f"invalid command job: {describe(error)}"
+            )
+        command = commands_by_path(plugin).get(job.path)
+        if command is None:
+            return await self._dead_letter(
+                message, f"unknown command /{' '.join(job.path)} for {plugin.name!r}"
+            )
+        try:
+            options = command.options.model_validate(job.options)
+        except ValidationError as error:
+            return await self._dead_letter(
+                message, f"invalid options: {describe(error)}"
+            )
+        try:
+            account = await self._linked_account(plugin.name, job.discord_user_id)
+        except SQLAlchemyError as error:
+            return await self._retry(message, f"database error: {type(error).__name__}")
+
+        invocation = Invocation[Any](
+            discord_user_id=job.discord_user_id, account=account, options=options
+        )
+        context = Context(
+            db=PluginDatabase(self._engine, plugin),
+            archive=PluginArchive(self._archive, plugin),
+            http=self._http.for_plugin(plugin),
+        )
+        result = await self._invoke(
+            message, envelope, attempt, lambda: command.handler(invocation, context)
+        )
+        if isinstance(result, RunResult):
+            return result
+        outcome = Outcome(writes=result.writes, jobs=result.jobs, events=result.events)
+        problems = check_outcome(plugin, outcome)
+        if problems:
+            return await self._dead_letter(
+                message, "contract violation: " + "; ".join(problems)
+            )
+        reply = Reply(job.application_id, job.interaction_token, result.reply)
+        try:
+            committed = await self._commit(plugin, envelope, outcome, reply)
+        except SQLAlchemyError as error:
+            return await self._retry(message, f"database error: {type(error).__name__}")
+        await self._queue.delete(message)
+        return RunResult(Status.DONE if committed else Status.DUPLICATE)
+
+    async def _invoke[T](
+        self,
+        message: ReceivedMessage,
+        envelope: JobEnvelope,
+        attempt: int,
+        call: Callable[[], Awaitable[T]],
+    ) -> T | RunResult:
+        """Run a handler under the job timeout; a failure settles the message
+        and comes back as the RunResult saying how."""
+        try:
+            async with asyncio.timeout(self._settings.job_timeout_seconds):
+                return await call()
+        except PermanentError as error:
+            return await self._dead_letter(message, f"permanent error: {error}")
+        except ContractViolationError as error:
+            return await self._dead_letter(message, f"contract violation: {error}")
+        except ThrottledError as error:
+            return await self._defer(message, envelope, attempt, error)
+        except TimeoutError:
+            return await self._retry(
+                message, f"timed out after {self._settings.job_timeout_seconds} s"
+            )
+        except Exception as error:  # RetryableError and unexpected failures alike
+            _log.warning("handler raised", exc_info=error)
+            return await self._retry(message, f"{type(error).__name__}: {error}")
+
+    async def _linked_account(
+        self, plugin: str, discord_user_id: str
+    ) -> LinkedAccount | None:
+        async with self._engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    select(
+                        linked_accounts.c.id,
+                        linked_accounts.c.discord_user_id,
+                        linked_accounts.c.external_id,
+                    ).where(
+                        linked_accounts.c.plugin == plugin,
+                        linked_accounts.c.discord_user_id == discord_user_id,
+                    )
+                )
+            ).first()
+        if row is None:
+            return None
+        return LinkedAccount(
+            id=row.id, discord_user_id=row.discord_user_id, external_id=row.external_id
+        )
+
     async def _upload(self, plugin: SourcePlugin, outcome: Outcome) -> None:
         for archive in outcome.archives:
             key = archive_key(plugin.name, archive.kind, archive.id)
@@ -283,11 +400,17 @@ class JobRunner:
         return found is not None
 
     async def _commit(
-        self, plugin: SourcePlugin, envelope: JobEnvelope, outcome: Outcome
+        self,
+        plugin: SourcePlugin,
+        envelope: JobEnvelope,
+        outcome: Outcome,
+        reply: Reply | None = None,
     ) -> bool:
         """Claim the key, run the plug-in's writes and fill the outboxes, atomically.
 
-        Returns False, writing nothing, if another delivery already committed.
+        A command's reply joins the same transaction, so it is sent if and only
+        if the command took effect. Returns False, writing nothing, if another
+        delivery already committed.
         """
         async with self._engine.connect() as connection:
             transaction = await connection.begin()
@@ -298,6 +421,13 @@ class JobRunner:
                 await connection.execute(write)
             await add_events(connection, plugin.name, outcome.events)
             await add_jobs(connection, plugin.name, outcome.jobs)
+            if reply is not None:
+                await add_reply(
+                    connection,
+                    reply.application_id,
+                    reply.interaction_token,
+                    reply.message,
+                )
             await transaction.commit()
             return True
 

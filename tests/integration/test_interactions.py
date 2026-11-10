@@ -4,17 +4,20 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from guildhall.platform.command_jobs import CommandJob, command_spec
 from guildhall.platform.database import DatabaseSettings, create_engine
 from guildhall.platform.interactions import (
     InteractionPruner,
     PostgresInteractionLog,
     interactions_seen,
 )
+from guildhall.platform.outbox import outbox_jobs
 
 
 @pytest.fixture
@@ -93,3 +96,46 @@ async def test_the_pruner_removes_only_ids_older_than_a_week(
             )
         )
         assert list(left) == [recent]
+
+
+async def jobs_for(engine: AsyncEngine, interaction_id: str) -> list[Any]:
+    async with engine.connect() as connection:
+        rows = await connection.execute(
+            select(outbox_jobs.c.body).where(
+                outbox_jobs.c.dedupe_key == f"synthetic:command:{interaction_id}"
+            )
+        )
+        return [row.body for row in rows]
+
+
+@pytest.fixture
+async def queued(engine: AsyncEngine, ids: list[str]) -> AsyncIterator[None]:
+    yield
+    async with engine.begin() as connection:
+        for interaction_id in ids:
+            await connection.execute(
+                delete(outbox_jobs).where(
+                    outbox_jobs.c.dedupe_key == f"synthetic:command:{interaction_id}"
+                )
+            )
+
+
+async def test_a_command_is_recorded_and_queued_together_once(
+    engine: AsyncEngine, ids: list[str], queued: None
+) -> None:
+    log = PostgresInteractionLog(engine)
+    interaction_id = new_id(ids)
+    job = CommandJob(
+        path=("synthetic", "echo"),
+        discord_user_id="user-1",
+        options={"text": "hi"},
+        application_id="app-1",
+        interaction_token="stand-in",
+        private=False,
+    )
+    spec = command_spec("synthetic", interaction_id, job)
+    assert await log.accept_command(interaction_id, "synthetic", spec)
+    assert not await log.accept_command(interaction_id, "synthetic", spec)
+    [body] = await jobs_for(engine, interaction_id)
+    assert (body["plugin"], body["type"]) == ("synthetic", "command:synthetic.echo")
+    assert body["payload"]["options"] == {"text": "hi"}

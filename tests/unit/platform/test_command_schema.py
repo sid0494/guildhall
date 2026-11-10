@@ -28,7 +28,7 @@ from guildhall.platform.discord import (
     register_commands,
 )
 
-BOT_TOKEN = "stand-in-bot-token"  # noqa: S105 - a stand-in, never a real token
+BOT_TOKEN = "stand-in-bot-token"
 
 
 class TrendOptions(ContractModel):

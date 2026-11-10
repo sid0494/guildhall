@@ -5,7 +5,7 @@ else; nothing about a rejected request is logged beyond the rejection
 (docs/adr/0059, 0061).
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol
 
@@ -18,12 +18,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from guildhall.api.interactions import (
     Interaction,
     InteractionType,
+    deferred,
     pong,
     private_message,
 )
 from guildhall.api.signature import SignatureVerifier
+from guildhall.contract import JobSpec
+from guildhall.platform.command_jobs import CommandJob, CommandRoute, command_spec
 
-NOT_YET_AVAILABLE = "Guildhall doesn't know that command yet."
+NOT_YET_AVAILABLE = "Guildhall doesn't handle that kind of interaction yet."
+UNKNOWN_COMMAND = "Guildhall doesn't know that command; it may have been removed."
 
 _log = structlog.get_logger(__name__)
 
@@ -33,6 +37,13 @@ class InteractionLog(Protocol):
 
     async def first_time(self, interaction_id: str) -> bool:
         """Record the ID; False if it was already recorded."""
+        ...
+
+    async def accept_command(
+        self, interaction_id: str, plugin: str, spec: JobSpec
+    ) -> bool:
+        """Record the ID and queue the command's job together; False, queuing
+        nothing, if the ID was already recorded."""
         ...
 
     async def is_ready(self) -> bool:
@@ -62,6 +73,7 @@ class ApiSettings(BaseSettings):
 def create_app(
     settings: ApiSettings,
     interaction_log: InteractionLog,
+    routes: Mapping[tuple[str, ...], CommandRoute],
     lifespan: Lifespan | None = None,
 ) -> FastAPI:
     """The app, with interactive API docs turned off: the endpoint is public.
@@ -102,6 +114,8 @@ def create_app(
 
         if interaction.type == InteractionType.PING:
             return _json(pong())
+        if interaction.type == InteractionType.APPLICATION_COMMAND:
+            return await _command(interaction, interaction_log, routes)
         try:
             first_time = await interaction_log.first_time(interaction.id)
         except Exception:
@@ -115,6 +129,48 @@ def create_app(
         return _json(private_message(NOT_YET_AVAILABLE))
 
     return app
+
+
+async def _command(
+    interaction: Interaction,
+    interaction_log: InteractionLog,
+    routes: Mapping[tuple[str, ...], CommandRoute],
+) -> JSONResponse:
+    """Queue the command as a job and say a reply is coming (docs/adr/0063)."""
+    caller = interaction.caller_id
+    if interaction.data is None or caller is None or not interaction.token:
+        _log.warning("interaction rejected", reason="command without data or caller")
+        return _json({"error": "malformed interaction"}, status_code=400)
+    path, values = interaction.data.path_and_values()
+    route = routes.get(path)
+    if route is None:
+        # Registered once, since removed: nothing to run.
+        _log.info("unknown command", command="/" + " ".join(path))
+        return _json(private_message(UNKNOWN_COMMAND))
+
+    job = CommandJob(
+        path=path,
+        discord_user_id=caller,
+        options=values,
+        application_id=interaction.application_id,
+        interaction_token=interaction.token,
+        private=route.command.private,
+    )
+    try:
+        first_time = await interaction_log.accept_command(
+            interaction.id,
+            route.plugin,
+            command_spec(route.plugin, interaction.id, job),
+        )
+    except Exception:
+        _log.warning("command not queued", exc_info=True)
+        return _json({"error": "temporarily unavailable"}, status_code=503)
+    _log.info(
+        "command queued" if first_time else "command repeated",
+        command="/" + " ".join(path),
+        plugin=route.plugin,
+    )
+    return _json(deferred(route.command.private))
 
 
 def _json(content: dict[str, Any], status_code: int = 200) -> JSONResponse:
