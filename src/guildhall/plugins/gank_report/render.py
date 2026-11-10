@@ -42,7 +42,7 @@ def render_match(event: MatchAnalyzed, mention: bool = True) -> Message:
         if metric is None:
             continue  # a metric since removed
         if result.value is None and metric.needs_parse and not event.parsed:
-            unparsed.append(metric.short_label)
+            unparsed.append(metric.label)
             continue
         rows.append(_row(metric, result))
 
@@ -91,14 +91,14 @@ def _row(metric: Metric, result: MetricResult) -> _Row:
 
 def _table(rows: list[_Row]) -> str:
     """Aligned columns: emoji and label, your value, arrow, your average."""
-    label = max(len(row.metric.short_label) for row in rows)
+    label = max(len(row.metric.label) for row in rows)
     value = max(len("you"), *(len(row.value) for row in rows))
     average = max(len("avg"), *(len(row.average) for row in rows))
     header = (
         " " * (EMOJI_WIDTH + 1 + label + 2) + f"{'you':>{value}}     {'avg':>{average}}"
     )
     lines = [header.rstrip()] + [
-        f"{row.metric.emoji} {row.metric.short_label:<{label}}  {row.value:>{value}}"
+        f"{row.metric.emoji} {row.metric.label:<{label}}  {row.value:>{value}}"
         f"  {row.arrow or ' '}  {row.average:>{average}}".rstrip()
         for row in rows
     ]

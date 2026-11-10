@@ -28,8 +28,6 @@ class Metric:
     compute: Callable[[Match, Player], float | None]
     emoji: str = ""
     """Shown before the label in posts."""
-    short_label: str = ""
-    """The label in a report's table, where space is tight."""
     decimals: int = 0
     """How many decimal places posts show."""
 
@@ -64,8 +62,7 @@ def observer_wards_placed(match: Match, player: Player) -> float | None:
 METRICS: Final = (
     Metric(
         name="last_hits_10",
-        short_label="LH@10",
-        label="Last hits at 10 min",
+        label="Last Hits @ 10 min",
         higher_is_better=True,
         needs_parse=True,
         compute=last_hits_at_10,
@@ -73,8 +70,7 @@ METRICS: Final = (
     ),
     Metric(
         name="gpm",
-        short_label="GPM",
-        label="GPM",
+        label="Gold per min",
         higher_is_better=True,
         needs_parse=False,
         compute=gold_per_minute,
@@ -82,7 +78,6 @@ METRICS: Final = (
     ),
     Metric(
         name="deaths_per_10",
-        short_label="Deaths/10",
         label="Deaths per 10 min",
         higher_is_better=False,
         needs_parse=False,
@@ -92,8 +87,7 @@ METRICS: Final = (
     ),
     Metric(
         name="hero_damage_per_min",
-        short_label="Dmg/min",
-        label="Hero damage per min",
+        label="Hero Damage per min",
         higher_is_better=True,
         needs_parse=False,
         compute=hero_damage_per_minute,
@@ -101,8 +95,7 @@ METRICS: Final = (
     ),
     Metric(
         name="observer_wards",
-        short_label="Wards",
-        label="Observer wards placed",
+        label="Observer Wards",
         higher_is_better=True,
         needs_parse=True,
         compute=observer_wards_placed,

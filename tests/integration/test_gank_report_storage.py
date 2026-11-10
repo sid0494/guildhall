@@ -351,6 +351,6 @@ async def test_match_last_rebuilds_the_latest_match_with_its_averages_then(
     # its average is over the 20 normal games on the hero before it (12.5).
     assert embed.timestamp == RECORDED_AT + timedelta(hours=1)
     assert embed.description is not None
-    gpm = [line for line in embed.description.split("\n") if "GPM" in line]
-    # That game was not parsed, so GPM is its only row.
-    assert gpm == ["💰 GPM  1,000  ▲   12"]
+    gpm = [line for line in embed.description.split("\n") if "Gold" in line]
+    # That game was not parsed, so gold is its only row.
+    assert gpm == ["💰 Gold per min  1,000  ▲   12"]

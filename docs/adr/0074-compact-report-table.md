@@ -21,8 +21,9 @@ text looked cluttered.
 ## Decision
 
 The embed's description is a code block: a header ("you", "avg") and one line
-per stat, starting with its emoji (kept, at the owner's request), a short
-label from the registry (`LH@10`, `GPM`, `Deaths/10`, `Dmg/min`, `Wards`),
+per stat, starting with its emoji and its label as a phrase ("Last Hits @ 10
+min", "Gold per min", "Deaths per 10 min", "Hero Damage per min", "Observer
+Wards"; emoji and phrases at the owner's request, abbreviations read poorly),
 the value, the arrow and the average, right-aligned in columns sized to the
 values shown. A stat without an average shows "·" and "first"; a missing value
 on a parsed match shows "—". Stats an unparsed match lacks are left out and
@@ -32,6 +33,7 @@ timestamp and arrow rules of ADR 0071 stay.
 
 ## Consequences
 
+- Lines run to about 42 characters, which can wrap in a narrow phone view.
 - Discord draws an emoji about two monospace columns wide; every stat line
   starts with one and the header is indented to match. Checked by eye in
   Discord.

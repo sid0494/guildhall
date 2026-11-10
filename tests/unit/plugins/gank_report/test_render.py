@@ -83,12 +83,12 @@ def test_a_loss_is_red() -> None:
 
 def test_the_table_aligns_values_arrows_and_averages() -> None:
     assert table_of(event()) == [
-        "                you       avg",
-        "🗡️ LH@10         56  ·  first",
-        "💰 GPM        1,599  ▲  1,244",
-        "💀 Deaths/10    0.5  ▲    2.2",
-        "💥 Dmg/min    1,529  ▲  1,224",
-        "👁️ Wards          1  ·  first",
+        "                          you       avg",
+        "🗡️ Last Hits @ 10 min      56  ·  first",
+        "💰 Gold per min         1,599  ▲  1,244",
+        "💀 Deaths per 10 min      0.5  ▲    2.2",
+        "💥 Hero Damage per min  1,529  ▲  1,224",
+        "👁️ Observer Wards           1  ·  first",
     ]
 
 
@@ -101,9 +101,9 @@ def test_arrows_follow_each_stats_direction_and_what_is_displayed() -> None:
         )
     )
     assert table_of(analysed)[1:] == [
-        "💰 GPM        430  ▼  471",
-        "💀 Deaths/10  1.4  ▼  1.1",
-        "💥 Dmg/min    499  ─  499",
+        "💰 Gold per min         430  ▼  471",
+        "💀 Deaths per 10 min    1.4  ▼  1.1",
+        "💥 Hero Damage per min  499  ─  499",
     ]
 
 
@@ -116,9 +116,13 @@ def test_stats_an_unparsed_match_lacks_are_left_out_and_named_in_the_footer() ->
             result("observer_wards", None),
         ),
     )
-    assert table_of(analysed) == ["        you     avg", "💰 GPM  499  ▲  471"]
+    assert table_of(analysed) == [
+        "                 you     avg",
+        "💰 Gold per min  499  ▲  471",
+    ]
     assert embed_of(analysed).footer == (
-        "vs. your Turbo games on Sniper · not parsed, so no LH@10 or Wards"
+        "vs. your Turbo games on Sniper · not parsed, so no Last Hits @ 10 min"
+        " or Observer Wards"
     )
 
 
@@ -126,12 +130,12 @@ def test_a_missing_value_on_a_parsed_match_shows_a_dash() -> None:
     analysed = event(
         metrics=(result("last_hits_10", None), result("gpm", 499.0, 471.0, 5))
     )
-    assert table_of(analysed)[1] == "🗡️ LH@10    —"
+    assert table_of(analysed)[1] == "🗡️ Last Hits @ 10 min    —"
 
 
 def test_a_first_game_on_the_hero_says_so_in_the_footer() -> None:
     analysed = event(metrics=(result("gpm", 499.0),))
-    assert table_of(analysed)[1] == "💰 GPM  499  ·  first"
+    assert table_of(analysed)[1] == "💰 Gold per min  499  ·  first"
     assert embed_of(analysed).footer == (
         "Your first Turbo game on Sniper that Gank Report has seen"
     )
@@ -139,7 +143,8 @@ def test_a_first_game_on_the_hero_says_so_in_the_footer() -> None:
 
 def test_a_metric_since_removed_is_left_out() -> None:
     analysed = event(metrics=(result("retired_metric", 3.0), result("gpm", 499.0)))
-    assert [line.split()[1] for line in table_of(analysed)[1:]] == ["GPM"]
+    [_header, only_row] = table_of(analysed)
+    assert only_row.startswith("💰 Gold per min")
 
 
 def test_an_event_stored_before_durations_still_renders() -> None:
