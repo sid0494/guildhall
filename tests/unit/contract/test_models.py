@@ -188,10 +188,12 @@ def test_empty_outcome_is_a_finished_job_with_no_output() -> None:
 def test_a_scheduled_run_survives_the_queue_in_utc() -> None:
     run = ScheduledRun(
         scheduled_for=datetime(2026, 11, 8, 18, 0, tzinfo=UTC),
-        account=LinkedAccount(discord_user_id="user-1", external_id="account-1"),
+        account=LinkedAccount(id=7, discord_user_id="user-1", external_id="account-1"),
     )
     back = ScheduledRun.model_validate_json(run.model_dump_json())
     assert back == run
+    assert back.account is not None
+    assert back.account.id == 7
     assert back.scheduled_for.utcoffset() == timedelta(0)
 
 
