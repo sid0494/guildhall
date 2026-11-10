@@ -78,3 +78,10 @@ def test_an_embeds_author_line_carries_its_icon() -> None:
 def test_an_author_icon_must_be_https() -> None:
     with pytest.raises(ValidationError):
         EmbedAuthor(name="x", icon_url="http://insecure.example/x.png")
+
+
+def test_an_embeds_footer_becomes_discords_footer_object() -> None:
+    [embed] = discord_message(Message(embeds=(Embed(footer="vs. your games"),)))[
+        "embeds"
+    ]
+    assert embed == {"footer": {"text": "vs. your games"}}

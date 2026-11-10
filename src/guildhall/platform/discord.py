@@ -149,6 +149,7 @@ def _embed(embed: Embed) -> dict[str, Any]:
         "description": embed.description,
         "color": embed.colour,
         "fields": [field.model_dump() for field in embed.fields] or None,
+        "footer": {"text": embed.footer} if embed.footer else None,
         "timestamp": embed.timestamp.isoformat() if embed.timestamp else None,
     }
     return {key: value for key, value in fields.items() if value is not None}
