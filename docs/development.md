@@ -94,6 +94,47 @@ which takes up to `GUILDHALL_RECEIVE_WAIT_SECONDS` (20). Press Ctrl+C a second
 time to stop at once; running jobs are then redelivered after the visibility
 timeout.
 
+## Running the api
+
+The api is Discord's interactions endpoint. It needs the application's public
+key, from the developer portal's General Information page, as
+`GUILDHALL_DISCORD_PUBLIC_KEY` in `.env`. The `app` profile runs it on
+`127.0.0.1:8000`, once the migrations are done:
+
+```sh
+curl -s http://127.0.0.1:8000/healthz   # liveness: {"status":"ok"}
+curl -s http://127.0.0.1:8000/readyz    # readiness: Postgres answers
+docker compose logs -f api              # follow the api's log
+```
+
+On the host instead: `uv run guildhall-api` (stop the container first; both
+use port 8000).
+
+### Letting Discord in: the tunnel
+
+Discord calls the api over public HTTPS, so locally an ngrok agent forwards a
+fixed public address to it ([ADR 0060](adr/0060-ngrok-tunnel.md)). Set
+`GUILDHALL_NGROK_AUTHTOKEN` (a secret, from the ngrok dashboard) and
+`GUILDHALL_NGROK_DOMAIN` (your free static domain, without `https://`) in
+`.env`, then:
+
+```sh
+docker compose --profile app --profile tunnel up -d --build --wait  # everything, plus the tunnel
+docker compose --profile app --profile tunnel logs ngrok            # "started tunnel" and the URL
+curl -s https://<your-domain>/healthz                                # through the tunnel, as Discord calls
+docker compose --profile app --profile tunnel down                  # stop everything; data is kept
+```
+
+Name both profiles in every command that touches `ngrok`: it depends on the
+api, which is in the `app` profile, and compose refuses to load a service
+whose dependency is outside the active profiles. Open
+<http://127.0.0.1:4040> to see each request Discord sends and the answer.
+
+In the developer portal, set the application's **Interactions Endpoint URL**
+to `https://<your-domain>/interactions` once; the domain never changes. Saving
+it makes Discord send a `PING` and some badly signed requests, so it succeeds
+only while the api and the tunnel are up.
+
 ## Upstream rate limits
 
 Each plug-in's upstream budget lives in Redis, shared by every worker. To look
