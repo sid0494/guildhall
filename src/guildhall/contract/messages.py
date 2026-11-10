@@ -23,12 +23,23 @@ class EmbedField(ContractModel):
     """Discord lays inline fields out side by side."""
 
 
+HttpsUrl = Annotated[str, Field(pattern=r"^https://", max_length=2048)]
+
+
+class EmbedAuthor(ContractModel):
+    """The small line at the top of an embed, with an optional icon."""
+
+    name: Annotated[str, Field(min_length=1, max_length=256)]
+    icon_url: HttpsUrl | None = None
+
+
 class Embed(ContractModel):
     """A card: title, text, a coloured edge, fields and a timestamp.
 
     Discord shows `timestamp` in each viewer's own time zone.
     """
 
+    author: EmbedAuthor | None = None
     title: Annotated[str, Field(max_length=256)] | None = None
     description: Annotated[str, Field(max_length=4096)] | None = None
     colour: Annotated[int, Field(ge=0, le=0xFFFFFF)] | None = None

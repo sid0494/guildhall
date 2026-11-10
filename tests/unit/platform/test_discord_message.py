@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from guildhall.contract import Embed, EmbedField, Message
+from guildhall.contract import Embed, EmbedAuthor, EmbedField, Message
 from guildhall.platform.discord import discord_message
 
 
@@ -64,3 +64,17 @@ def test_an_embed_becomes_discords_shape_and_notifies_only_listed_users() -> Non
             }
         ],
     }
+
+
+def test_an_embeds_author_line_carries_its_icon() -> None:
+    icon = "https://cdn.example/icons/x.png"
+    message = Message(
+        embeds=(Embed(author=EmbedAuthor(name="Wraith King", icon_url=icon)),)
+    )
+    [embed] = discord_message(message)["embeds"]
+    assert embed == {"author": {"name": "Wraith King", "icon_url": icon}}
+
+
+def test_an_author_icon_must_be_https() -> None:
+    with pytest.raises(ValidationError):
+        EmbedAuthor(name="x", icon_url="http://insecure.example/x.png")

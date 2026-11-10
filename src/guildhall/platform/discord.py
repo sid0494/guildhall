@@ -101,6 +101,7 @@ def discord_message(message: Message) -> dict[str, Any]:
 
 def _embed(embed: Embed) -> dict[str, Any]:
     fields = {
+        "author": embed.author.model_dump(exclude_none=True) if embed.author else None,
         "title": embed.title,
         "description": embed.description,
         "color": embed.colour,

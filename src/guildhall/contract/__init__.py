@@ -19,7 +19,7 @@ from guildhall.contract.links import (
     LinkVerifier,
     Rejected,
 )
-from guildhall.contract.messages import Embed, EmbedField, Message
+from guildhall.contract.messages import Embed, EmbedAuthor, EmbedField, Message
 from guildhall.contract.models import (
     Archive,
     ContractModel,
@@ -46,6 +46,7 @@ __all__ = [
     "ContractModel",
     "Database",
     "Embed",
+    "EmbedAuthor",
     "EmbedField",
     "Event",
     "Handler",
