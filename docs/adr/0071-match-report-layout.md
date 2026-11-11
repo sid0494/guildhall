@@ -1,6 +1,6 @@
 # 0071. The post-match report's layout
 
-Status: Accepted (2026-11-10)
+Status: Accepted (2026-11-10); layout superseded by [0074](0074-one-row-per-stat.md)
 
 ## Context
 

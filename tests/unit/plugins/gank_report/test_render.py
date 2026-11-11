@@ -1,9 +1,7 @@
-"""The post-match report's embed, case by case."""
+"""The post-match report: a compact table in an embed, case by case."""
 
 from datetime import UTC, datetime
 from typing import Any
-
-import pytest
 
 from guildhall.contract import Embed, EmbedAuthor
 from guildhall.plugins.gank_report import GankReportPlugin
@@ -20,24 +18,33 @@ def result(
     return MetricResult(name=name, value=value, baseline=baseline, baseline_games=games)
 
 
+SNIPER_WIN = (
+    result("last_hits_10", 56.0),
+    result("gpm", 1599.0, 1244.0, 9),
+    result("deaths_per_10", 0.5, 2.2, 9),
+    result("hero_damage_per_min", 1529.0, 1224.0, 9),
+    result("observer_wards", 1.0),
+)
+
+
 def event(**change: Any) -> MatchAnalyzed:
     fields: dict[str, Any] = {
         "dedupe_key": "gank_report:match_analyzed:5001:1",
         "match_id": 5001,
         "discord_user_id": "1234",
-        "hero_id": 42,
+        "hero_id": 35,
         "won": True,
-        "mode": "normal",
+        "mode": "turbo",
         "parsed": True,
         "played_at": PLAYED,
-        "duration_seconds": 1729,
-        "metrics": (result("gpm", 499.0, 471.0, 12),),
+        "duration_seconds": 1300,
+        "metrics": SNIPER_WIN,
     }
     return MatchAnalyzed(**(fields | change))
 
 
-def embed_of(analysed: MatchAnalyzed) -> Embed:
-    [embed] = render_match(analysed).embeds
+def embed_of(analysed: MatchAnalyzed, mention: bool = True) -> Embed:
+    [embed] = render_match(analysed, mention).embeds
     return embed
 
 
@@ -50,98 +57,98 @@ def test_the_post_mentions_the_player_and_only_them() -> None:
     assert (message.content, message.mentions) == ("<@1234>", ("1234",))
 
 
-def test_a_win_is_green_with_hero_icon_result_duration_and_kind() -> None:
+def test_a_reply_mentions_nobody() -> None:
+    message = render_match(event(), mention=False)
+    assert (message.content, message.mentions) == ("", ())
+
+
+def test_the_card_has_the_hero_result_duration_kind_and_comparison() -> None:
     embed = embed_of(event())
-    assert embed.author == EmbedAuthor(name="Wraith King", icon_url=hero_icon_url(42))
-    assert embed.title == "🏆 Win · 28:49 · Normal"
+    assert embed.author == EmbedAuthor(name="Sniper", icon_url=hero_icon_url(35))
+    assert embed.title == "🏆 Win · 21:40 · Turbo"
     assert embed.colour == WIN_COLOUR
     assert embed.timestamp == PLAYED
-    assert embed.description == "Compared with your recent normal games on Wraith King."
+    assert embed.footer == "vs. your Turbo games on Sniper"
+    assert embed.description is None
 
 
-def test_a_turbo_loss_is_red() -> None:
-    embed = embed_of(event(won=False, mode="turbo"))
-    assert (embed.title, embed.colour) == ("💀 Loss · 28:49 · Turbo", LOSS_COLOUR)
+def test_a_loss_is_red() -> None:
+    embed = embed_of(event(won=False, mode="normal"))
+    assert (embed.title, embed.colour) == ("💀 Loss · 21:40 · Normal", LOSS_COLOUR)
 
 
-@pytest.mark.parametrize(
-    ("metric", "value", "baseline", "shown"),
-    [
-        ("gpm", 499.0, 471.0, "499 ▲ (avg 471)"),
-        ("gpm", 430.0, 471.0, "430 ▼ (avg 471)"),
-        ("deaths_per_10", 1.4, 1.1, "1.4 ▼ (avg 1.1)"),  # more deaths is worse
-        ("deaths_per_10", 0.9, 1.1, "0.9 ▲ (avg 1.1)"),
-        ("gpm", 499.4, 499.0, "499 ─ (avg 499)"),  # looks equal, so "same"
-        ("hero_damage_per_min", 1240.0, 1110.0, "1,240 ▲ (avg 1,110)"),
-    ],
-    ids=[
-        "higher-better",
-        "lower-worse",
-        "deaths-up",
-        "deaths-down",
-        "same",
-        "thousands",
-    ],
-)
-def test_each_metric_is_compared_with_the_players_average(
-    metric: str, value: float, baseline: float, shown: str
-) -> None:
-    analysed = event(metrics=(result(metric, value, baseline, 12),))
-    [field] = embed_of(analysed).fields
-    assert field.value == shown
-    assert field.inline
+def test_each_stat_has_its_own_full_width_row() -> None:
+    assert values(event()) == {
+        "🗡️ Last Hits @ 10 min": "56 ⚪· first",
+        "💰 Gold per min": "1,599 🟢▲ (avg 1,244)",
+        "💀 Deaths per 10 min": "0.5 🟢▼ (avg 2.2)",  # fewer deaths: down, and good
+        "💥 Hero Damage per min": "1,529 🟢▲ (avg 1,224)",
+        "👁️ Observer Wards": "1 ⚪· first",
+    }
+    assert not any(field.inline for field in embed_of(event()).fields)
 
 
-def test_metric_names_carry_their_emoji_and_label() -> None:
-    analysed = event(metrics=(result("last_hits_10", 60.0, 52.0, 4),))
-    assert list(values(analysed)) == ["🗡️ Last hits at 10 min"]
+def test_colour_says_better_or_worse_and_the_arrow_says_which_way() -> None:
+    analysed = event(
+        metrics=(
+            result("gpm", 430.0, 471.0, 5),  # lower gold is worse
+            result("deaths_per_10", 1.4, 1.1, 5),  # more deaths is worse
+            result("hero_damage_per_min", 499.4, 499.0, 5),  # looks equal: same
+        )
+    )
+    assert list(values(analysed).values()) == [
+        "430 🔴▼ (avg 471)",
+        "1.4 🔴▲ (avg 1.1)",
+        "499 ⚪─ (avg 499)",
+    ]
+
+
+def test_stats_an_unparsed_match_lacks_are_left_out_and_named_in_the_footer() -> None:
+    analysed = event(
+        parsed=False,
+        metrics=(
+            result("last_hits_10", None),
+            result("gpm", 499.0, 471.0, 5),
+            result("observer_wards", None),
+        ),
+    )
+    assert values(analysed) == {"💰 Gold per min": "499 🟢▲ (avg 471)"}
+    assert embed_of(analysed).footer == (
+        "vs. your Turbo games on Sniper · not parsed, so no Last Hits @ 10 min"
+        " or Observer Wards"
+    )
+
+
+def test_a_missing_value_on_a_parsed_match_shows_a_dash() -> None:
+    analysed = event(
+        metrics=(result("last_hits_10", None), result("gpm", 499.0, 471.0, 5))
+    )
+    assert values(analysed)["🗡️ Last Hits @ 10 min"] == "—"
 
 
 def test_a_first_game_on_the_hero_says_so() -> None:
     analysed = event(metrics=(result("gpm", 499.0),))
-    assert values(analysed) == {"💰 GPM": "499 (first game)"}
-    assert embed_of(analysed).description == (
-        "Your first normal game on Wraith King that Gank Report has seen."
+    assert values(analysed) == {"💰 Gold per min": "499 ⚪· first"}
+    assert embed_of(analysed).footer == (
+        "Your first Turbo game on Sniper that Gank Report has seen"
     )
-
-
-def test_a_parse_only_metric_on_an_unparsed_match_says_why_it_is_missing() -> None:
-    analysed = event(parsed=False, metrics=(result("observer_wards", None),))
-    assert values(analysed) == {"👁️ Observer wards placed": "— (needs a parsed match)"}
-
-
-def test_a_missing_value_on_a_parsed_match_is_a_dash() -> None:
-    analysed = event(metrics=(result("last_hits_10", None),))  # under 10 minutes
-    assert values(analysed) == {"🗡️ Last hits at 10 min": "—"}
 
 
 def test_a_metric_since_removed_is_left_out() -> None:
     analysed = event(metrics=(result("retired_metric", 3.0), result("gpm", 499.0)))
-    assert list(values(analysed)) == ["💰 GPM"]
+    assert list(values(analysed)) == ["💰 Gold per min"]
 
 
 def test_an_event_stored_before_durations_still_renders() -> None:
     analysed = MatchAnalyzed.model_validate(
         event().model_dump(mode="json", exclude={"duration_seconds"})
     )
-    assert embed_of(analysed).title == "🏆 Win · Normal"
+    assert embed_of(analysed).title == "🏆 Win · Turbo"
 
 
 def test_a_hero_newer_than_the_table_renders_by_number_without_an_icon() -> None:
     assert embed_of(event(hero_id=9999)).author == EmbedAuthor(name="Hero 9999")
 
 
-def test_the_plugin_renders_its_own_events_and_nothing_else() -> None:
-    plugin = GankReportPlugin()
-    assert plugin.render(event()) == render_match(event())
-
-
-def test_a_parse_only_metric_without_an_average_is_the_first_parsed_game() -> None:
-    # Earlier games on the hero exist (GPM has an average) but none was parsed.
-    analysed = event(
-        metrics=(result("last_hits_10", 56.0), result("gpm", 1599.0, 1244.0, 9))
-    )
-    assert values(analysed) == {
-        "🗡️ Last hits at 10 min": "56 (first parsed game)",
-        "💰 GPM": "1,599 ▲ (avg 1,244)",
-    }
+def test_the_plugin_renders_its_own_events() -> None:
+    assert GankReportPlugin().render(event()) == render_match(event())

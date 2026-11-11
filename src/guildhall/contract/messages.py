@@ -45,6 +45,8 @@ class Embed(ContractModel):
     colour: Annotated[int, Field(ge=0, le=0xFFFFFF)] | None = None
     """An RGB colour, e.g. 0x2ECC71."""
     fields: Annotated[tuple[EmbedField, ...], Field(max_length=25)] = ()
+    footer: Annotated[str, Field(max_length=2048)] | None = None
+    """Small text at the bottom, beside the timestamp."""
     timestamp: datetime | None = None
 
 

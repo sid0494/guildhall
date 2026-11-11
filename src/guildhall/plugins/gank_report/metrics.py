@@ -62,7 +62,7 @@ def observer_wards_placed(match: Match, player: Player) -> float | None:
 METRICS: Final = (
     Metric(
         name="last_hits_10",
-        label="Last hits at 10 min",
+        label="Last Hits @ 10 min",
         higher_is_better=True,
         needs_parse=True,
         compute=last_hits_at_10,
@@ -70,7 +70,7 @@ METRICS: Final = (
     ),
     Metric(
         name="gpm",
-        label="GPM",
+        label="Gold per min",
         higher_is_better=True,
         needs_parse=False,
         compute=gold_per_minute,
@@ -87,7 +87,7 @@ METRICS: Final = (
     ),
     Metric(
         name="hero_damage_per_min",
-        label="Hero damage per min",
+        label="Hero Damage per min",
         higher_is_better=True,
         needs_parse=False,
         compute=hero_damage_per_minute,
@@ -95,7 +95,7 @@ METRICS: Final = (
     ),
     Metric(
         name="observer_wards",
-        label="Observer wards placed",
+        label="Observer Wards",
         higher_is_better=True,
         needs_parse=True,
         compute=observer_wards_placed,

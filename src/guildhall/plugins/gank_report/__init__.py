@@ -17,9 +17,12 @@ from guildhall.contract import (
     Accepted,
     AccountLink,
     Archive,
+    Command,
+    CommandOutcome,
     Context,
     ContractModel,
     Event,
+    Invocation,
     Job,
     JobSpec,
     JobType,
@@ -71,6 +74,10 @@ NOT_AN_ACCOUNT = (
     "That doesn't look like a Dota account ID or a Steam ID. Your account ID is"
     " the number in your OpenDota profile's address: opendota.com/players/<id>."
 )
+LINK_FIRST = "Link your Dota account first: /link dota."
+NOTHING_ANALYSED_YET = (
+    "No analysed matches yet; reports appear a few minutes after a game."
+)
 NO_MATCHES_VISIBLE = (
     "OpenDota can't see any matches for that account. Check that Expose Public"
     " Match Data is on in Dota's settings, or play a match first."
@@ -101,6 +108,10 @@ class FetchMatch(ContractModel):
     match_id: PositiveInt
 
 
+class MatchLastOptions(ContractModel):
+    """`/match last` takes no options."""
+
+
 class AnalyzeMatch(ContractModel):
     """Record one linked account's part in a fetched match."""
 
@@ -129,6 +140,69 @@ class GankReportPlugin(SourcePlugin):
 
     def event_types(self) -> list[type[Event]]:
         return [MatchAnalyzed]
+
+    def commands(self) -> list[Command[Any]]:
+        return [
+            Command(
+                ("match", "last"),
+                "Your latest analysed match",
+                MatchLastOptions,
+                self.match_last,
+            )
+        ]
+
+    async def match_last(
+        self, invocation: Invocation[MatchLastOptions], ctx: Context
+    ) -> CommandOutcome:
+        """The latest analysed match's report, rebuilt from what is stored,
+        with the averages as they stood for that match (docs/adr/0073)."""
+        account = invocation.account
+        if account is None:
+            return CommandOutcome(reply=Message(content=LINK_FIRST))
+        account_id = _dota_account_id(account)
+        latest = await ctx.db.fetch(
+            select(
+                player_matches.c.match_id,
+                player_matches.c.hero_id,
+                player_matches.c.won,
+                matches.c.mode,
+                matches.c.parsed,
+                matches.c.played_at,
+                matches.c.duration_seconds,
+            )
+            .join(matches, matches.c.match_id == player_matches.c.match_id)
+            .where(player_matches.c.account_id == account_id)
+            .order_by(matches.c.played_at.desc())
+            .limit(1)
+        )
+        if not latest:
+            return CommandOutcome(reply=Message(content=NOTHING_ANALYSED_YET))
+        match = latest[0]
+        stored = await ctx.db.fetch(
+            select(metrics.c.metric, metrics.c.value).where(
+                metrics.c.match_id == match.match_id,
+                metrics.c.account_id == account_id,
+            )
+        )
+        by_name = {row.metric: row.value for row in stored}
+        values = {m.name: by_name[m.name] for m in METRICS if m.name in by_name}
+        mode = Mode(match.mode)
+        averages = await ctx.db.fetch(
+            _baselines(account_id, match.hero_id, mode, match.played_at)
+        )
+        event = MatchAnalyzed(
+            dedupe_key=f"gank_report:match_analyzed:{match.match_id}:{account.id}",
+            match_id=match.match_id,
+            discord_user_id=account.discord_user_id,
+            hero_id=match.hero_id,
+            won=match.won,
+            mode=mode.value,
+            parsed=match.parsed,
+            played_at=match.played_at,
+            duration_seconds=match.duration_seconds,
+            metrics=_results(values, averages),
+        )
+        return CommandOutcome(reply=render_match(event, mention=False))
 
     def render(self, event: Event) -> Message | None:
         if isinstance(event, MatchAnalyzed):

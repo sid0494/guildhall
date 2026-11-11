@@ -15,13 +15,19 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from guildhall.contract import (
     Context,
     Database,
+    Invocation,
     Job,
     LinkedAccount,
     Outcome,
     ScheduledRun,
 )
 from guildhall.platform.storage import PluginDatabase
-from guildhall.plugins.gank_report import AnalyzeMatch, FetchMatch, GankReportPlugin
+from guildhall.plugins.gank_report import (
+    AnalyzeMatch,
+    FetchMatch,
+    GankReportPlugin,
+    MatchLastOptions,
+)
 from guildhall.plugins.gank_report.events import MatchAnalyzed
 from guildhall.plugins.gank_report.tables import (
     matches,
@@ -326,3 +332,23 @@ async def test_the_post_compares_with_my_last_20_games_on_the_hero_in_this_kind(
     assert by_name["last_hits_10"].baseline_games == 5
     assert by_name["last_hits_10"].baseline == pytest.approx(40 + (18 + 22) / 2)
     assert by_name["observer_wards"].baseline_games == 0
+
+
+async def test_match_last_rebuilds_the_latest_match_with_its_averages_then(
+    engine: AsyncEngine, history: bytes
+) -> None:
+    me = LinkedAccount(id=1, discord_user_id="user-1", external_id=str(ME_ID))
+    invocation = Invocation[MatchLastOptions](
+        discord_user_id="user-1", account=me, options=MatchLastOptions()
+    )
+    plugin = GankReportPlugin()
+    context = Context(
+        db=PluginDatabase(engine, plugin), archive=NoArchive(), http=NoHttp()
+    )
+    outcome = await plugin.match_last(invocation, context)
+    [embed] = outcome.reply.embeds
+    # The latest is the game played an hour after the recorded one, GPM 1000;
+    # its average is over the 20 normal games on the hero before it (12.5).
+    assert embed.timestamp == RECORDED_AT + timedelta(hours=1)
+    fields = {field.name: field.value for field in embed.fields}
+    assert fields["💰 Gold per min"] == "1,000 🟢▲ (avg 12)"

@@ -191,7 +191,7 @@ A match is fetched once, whoever played in it; each linked account in it is then
 
 Matches are tracked as one of two kinds, which reports never mix: **normal** (ranked and unranked together: the balanced draft modes in unranked, ranked and Battle Cup lobbies) and **Turbo**, whose economy and pace differ. Other modes, private and tournament lobbies, bot games and games shorter than five minutes are not tracked ([ADR 0051](adr/0051-tracked-modes-normal-and-turbo.md)).
 
-- **Post-match:** an embed headed by the hero's icon and name ([ADR 0070](adr/0070-hero-table-with-icon-paths.md)), the result, duration and kind, and each focus metric with an arrow against my rolling average on that hero in the same kind ([ADR 0071](adr/0071-match-report-layout.md)).
+- **Post-match:** an embed headed by the hero's icon and name ([ADR 0070](adr/0070-hero-table-with-icon-paths.md)), the result, duration and kind, and a row per focus metric, marked green or red with the direction it moved against my rolling average on that hero in the same kind ([ADR 0071](adr/0071-match-report-layout.md), [ADR 0074](adr/0074-one-row-per-stat.md)).
 - **Weekly (Sunday):** one section per kind I played at least one match of that week; in each, per focus metric, this week vs. the previous four, plus the best and worst game of the week.
 - **On demand:** `/match last` and `/trend [hero] [weeks]`.
 
@@ -263,7 +263,7 @@ Guildhall uses Discord's HTTP interactions endpoint, not a persistent gateway co
 | --- | --- | --- |
 | `/link dota <account id>` | Gank Report | Links my Dota account and starts the backfill |
 | `/link steam <steam id>` | Side Quest | Links Steam and runs the first sync |
-| `/match last` | Gank Report | Report for the latest analyzed match |
+| `/match last` | Gank Report | Report for the latest analyzed match, rebuilt as it was posted ([ADR 0073](adr/0073-match-last-rebuilds-the-report.md)) |
 | `/trend [hero] [weeks]` | Gank Report | Focus metrics over time |
 | `/focus add\|remove <metric>` | Gank Report | Choose the skills to track |
 | `/backlog [state]` | Side Quest | Lists games by state |
@@ -437,7 +437,7 @@ Milestones are defined by what works, not by dates. Each ends with a usable syst
 
 - [x] `poll_matches`, `fetch_match`, parse-retry, S3 archive, `analyze_match`, metric registry
 - [x] Per-plug-in rate limiter with backoff
-- [ ] Discord endpoint, `/link`, `/match last`, outbox dispatcher
+- [x] Discord endpoint, `/link`, `/match last`, outbox dispatcher
 - [x] api service in docker-compose
 
 **Done when:** I play a match and the report shows up in Discord on its own.
