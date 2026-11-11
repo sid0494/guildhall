@@ -48,12 +48,8 @@ def embed_of(analysed: MatchAnalyzed, mention: bool = True) -> Embed:
     return embed
 
 
-def table_of(analysed: MatchAnalyzed) -> list[str]:
-    description = embed_of(analysed).description
-    assert description is not None
-    assert description.startswith("```\n")
-    assert description.endswith("\n```")
-    return description.removeprefix("```\n").removesuffix("\n```").split("\n")
+def values(analysed: MatchAnalyzed) -> dict[str, str]:
+    return {field.name: field.value for field in embed_of(analysed).fields}
 
 
 def test_the_post_mentions_the_player_and_only_them() -> None:
@@ -73,7 +69,7 @@ def test_the_card_has_the_hero_result_duration_kind_and_comparison() -> None:
     assert embed.colour == WIN_COLOUR
     assert embed.timestamp == PLAYED
     assert embed.footer == "vs. your Turbo games on Sniper"
-    assert embed.fields == ()
+    assert embed.description is None
 
 
 def test_a_loss_is_red() -> None:
@@ -81,29 +77,29 @@ def test_a_loss_is_red() -> None:
     assert (embed.title, embed.colour) == ("💀 Loss · 21:40 · Normal", LOSS_COLOUR)
 
 
-def test_the_table_aligns_values_arrows_and_averages() -> None:
-    assert table_of(event()) == [
-        "                          you         avg",
-        "🗡️ Last Hits @ 10 min      56  ⚪·  first",
-        "💰 Gold per min         1,599  🟢▲  1,244",
-        "💀 Deaths per 10 min      0.5  🟢▼    2.2",  # fewer deaths: down, and good
-        "💥 Hero Damage per min  1,529  🟢▲  1,224",
-        "👁️ Observer Wards           1  ⚪·  first",
-    ]
+def test_each_stat_has_its_own_full_width_row() -> None:
+    assert values(event()) == {
+        "🗡️ Last Hits @ 10 min": "56 ⚪· first",
+        "💰 Gold per min": "1,599 🟢▲ (avg 1,244)",
+        "💀 Deaths per 10 min": "0.5 🟢▼ (avg 2.2)",  # fewer deaths: down, and good
+        "💥 Hero Damage per min": "1,529 🟢▲ (avg 1,224)",
+        "👁️ Observer Wards": "1 ⚪· first",
+    }
+    assert not any(field.inline for field in embed_of(event()).fields)
 
 
 def test_colour_says_better_or_worse_and_the_arrow_says_which_way() -> None:
     analysed = event(
         metrics=(
-            result("gpm", 430.0, 471.0, 5),  # lower GPM is worse
+            result("gpm", 430.0, 471.0, 5),  # lower gold is worse
             result("deaths_per_10", 1.4, 1.1, 5),  # more deaths is worse
             result("hero_damage_per_min", 499.4, 499.0, 5),  # looks equal: same
         )
     )
-    assert table_of(analysed)[1:] == [
-        "💰 Gold per min         430  🔴▼  471",
-        "💀 Deaths per 10 min    1.4  🔴▲  1.1",
-        "💥 Hero Damage per min  499  ⚪─  499",
+    assert list(values(analysed).values()) == [
+        "430 🔴▼ (avg 471)",
+        "1.4 🔴▲ (avg 1.1)",
+        "499 ⚪─ (avg 499)",
     ]
 
 
@@ -116,10 +112,7 @@ def test_stats_an_unparsed_match_lacks_are_left_out_and_named_in_the_footer() ->
             result("observer_wards", None),
         ),
     )
-    assert table_of(analysed) == [
-        "                 you       avg",
-        "💰 Gold per min  499  🟢▲  471",
-    ]
+    assert values(analysed) == {"💰 Gold per min": "499 🟢▲ (avg 471)"}
     assert embed_of(analysed).footer == (
         "vs. your Turbo games on Sniper · not parsed, so no Last Hits @ 10 min"
         " or Observer Wards"
@@ -130,12 +123,12 @@ def test_a_missing_value_on_a_parsed_match_shows_a_dash() -> None:
     analysed = event(
         metrics=(result("last_hits_10", None), result("gpm", 499.0, 471.0, 5))
     )
-    assert table_of(analysed)[1] == "🗡️ Last Hits @ 10 min    —"
+    assert values(analysed)["🗡️ Last Hits @ 10 min"] == "—"
 
 
-def test_a_first_game_on_the_hero_says_so_in_the_footer() -> None:
+def test_a_first_game_on_the_hero_says_so() -> None:
     analysed = event(metrics=(result("gpm", 499.0),))
-    assert table_of(analysed)[1] == "💰 Gold per min  499  ⚪·  first"
+    assert values(analysed) == {"💰 Gold per min": "499 ⚪· first"}
     assert embed_of(analysed).footer == (
         "Your first Turbo game on Sniper that Gank Report has seen"
     )
@@ -143,8 +136,7 @@ def test_a_first_game_on_the_hero_says_so_in_the_footer() -> None:
 
 def test_a_metric_since_removed_is_left_out() -> None:
     analysed = event(metrics=(result("retired_metric", 3.0), result("gpm", 499.0)))
-    [_header, only_row] = table_of(analysed)
-    assert only_row.startswith("💰 Gold per min")
+    assert list(values(analysed)) == ["💰 Gold per min"]
 
 
 def test_an_event_stored_before_durations_still_renders() -> None:
@@ -152,11 +144,6 @@ def test_an_event_stored_before_durations_still_renders() -> None:
         event().model_dump(mode="json", exclude={"duration_seconds"})
     )
     assert embed_of(analysed).title == "🏆 Win · Turbo"
-
-
-def test_a_report_with_nothing_to_show_has_no_table() -> None:
-    analysed = event(parsed=False, metrics=(result("observer_wards", None),))
-    assert embed_of(analysed).description is None
 
 
 def test_a_hero_newer_than_the_table_renders_by_number_without_an_icon() -> None:
