@@ -116,6 +116,8 @@ plug-in can't take the others down.
 ## 📚 More
 
 - 🧭 [Design spec](docs/design-spec.md): how Guildhall works underneath.
+- 🗺️ [Guildhall in diagrams](docs/architecture.md): a visual tour of the
+  architecture, code and main workflows.
 - 🗳️ [Decision records](docs/adr/): why it's built the way it is.
 - 🛠️ [Development](docs/development.md): running it and contributing changes.
 
