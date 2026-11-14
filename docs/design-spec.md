@@ -29,48 +29,39 @@ Guildhall is a personal gaming companion that lives in Discord. It pulls data fr
 
 ## Architecture
 
-One container image runs as two Deployments: `api` handles Discord's signed requests and nothing slow; `worker` runs the platform loop that hosts the plug-ins. All slow work goes through SQS, so the api always answers Discord within 3 seconds.
+One container image runs as two Kubernetes Deployments (on kind locally, EKS on AWS): `api` handles Discord's signed requests and nothing slow; `worker` runs the platform loop that hosts the plug-ins. All slow work goes through SQS, so the api always answers Discord within 3 seconds.
 
 ```mermaid
 flowchart TB
-    discord["Discord<br/>my server"]
-
-    subgraph cluster["Kubernetes cluster (kind locally, EKS on AWS)"]
-        api["api<br/>verifies signature, replies in 3 s"]
-        subgraph worker["Guildhall worker pods (platform)<br/>schedules · dedupe · retries · rate limits · outbox"]
-            gank["Gank Report<br/>Dota 2 match metrics"]
-            quest["Side Quest<br/>library, price alerts"]
-        end
-        redis[("Redis<br/>rate-limit buckets")]
-    end
-
+    discordin["Discord<br/>slash commands"]
     sqs[["SQS job queue<br/>+ dead-letter queue"]]
-    pg[("Postgres<br/>RDS on AWS")]
-    s3[("S3<br/>raw payload archive")]
 
-    subgraph upstream["Upstream APIs"]
-        opendota["OpenDota"]
-        steam["Steam Web API"]
-        itad["IsThereAnyDeal"]
+    api["api pods<br/>verify signature, reply in 3 s"]
+    subgraph worker["worker pods"]
+        gank["Gank Report<br/>Dota 2 match metrics"]
+        quest["Side Quest<br/>library, price alerts"]
     end
 
-    discord -- "slash commands (signed HTTPS)" --> api
-    api -- "slow commands" --> sqs
-    sqs -- "jobs" --> worker
-    worker -- "reports, alerts (outbox)" --> discord
-    api --> pg
-    worker --> pg
-    worker --> s3
-    worker --> redis
-    gank -- "rate-limited" --> opendota
-    quest -- "rate-limited" --> steam
-    quest -- "rate-limited" --> itad
+    pg[("Postgres<br/>RDS on AWS")]
+    redis[("Redis<br/>rate-limit buckets")]
+    s3[("S3<br/>raw payload archive")]
+    discordout["Discord<br/>replies, reports, alerts"]
+    upstream["Upstream APIs<br/>OpenDota · Steam · IsThereAnyDeal"]
 
-    classDef plugin fill:#e7f1fb,stroke:#2f6fdb,stroke-width:2px
+    discordin -- "signed HTTPS" --> api
+    sqs -- "jobs" --> worker
+    api -- "commands as jobs (outbox)" --> pg
+    worker --> pg
+    worker --> redis
+    worker --> s3
+    worker -- "outbox" --> discordout
+    worker -- "rate-limited" --> upstream
+
+    classDef plugin fill:#e7f1fb,stroke:#2f6fdb,stroke-width:2px,color:#0b2a5b
     class gank,quest plugin
 ```
 
-The highlighted plug-ins are the only game-specific code; everything else is platform.
+The highlighted plug-ins are the only game-specific code; everything else is platform: schedules, deduplication, retries, rate limits and the outboxes. The api never calls SQS: it writes a command's job to the outbox in Postgres, and a relay in the worker sends it on. [Guildhall in diagrams](architecture.md) walks through the deployments, code structure, data model and main workflows visually.
 
 ### Repository layout
 
