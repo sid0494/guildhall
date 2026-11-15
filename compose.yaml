@@ -6,7 +6,8 @@
 #   ... --profile app --profile tunnel ...       also expose the api to Discord through ngrok
 #
 # Compose reads .env to fill in ${...} below (see .env.example). Third-party
-# images are pinned by tag and digest; Dependabot keeps them current.
+# images are pinned by tag and digest; Dependabot keeps them current. The kind
+# cluster runs the same images (k8s/); a unit test checks they match.
 name: guildhall
 
 # Shared by every service that runs the Guildhall image. `x-` keys are ignored

@@ -9,6 +9,7 @@ repos:
       - id: check-added-large-files
       - id: check-yaml
         exclude: ^compose(\..+)?\.yaml$
+        args: [--allow-multiple-documents] # Kubernetes manifests hold several objects
       - id: check-yaml
         name: check yaml (compose files; syntax only, for compose's !reset and !override)
         files: ^compose(\..+)?\.yaml$

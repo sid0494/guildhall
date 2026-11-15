@@ -1,0 +1,83 @@
+# Postgres for the kind cluster only; EKS uses RDS (docs/adr/0078). A
+# StatefulSet keeps one pod, postgres-0, with its own volume that is
+# reattached whenever the pod is replaced. Same image as compose.yaml.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: guildhall
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: guildhall
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: guildhall
+    spec:
+      # Don't inject an environment variable per Service (POSTGRES_PORT=tcp://...).
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: postgres:18.6-trixie@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+          env:
+            - name: POSTGRES_USER
+              value: guildhall
+            - name: POSTGRES_DB
+              value: guildhall
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: guildhall-secrets
+                  key: GUILDHALL_POSTGRES_PASSWORD
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "--username=guildhall", "--dbname=guildhall"]
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+  # One claim per pod, created from this template and kept when the pod goes:
+  # kind's local-path provisioner backs it with a folder on the node.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Headless (no cluster IP): the name resolves straight to the pod's IP, and
+# gives the StatefulSet's pod its stable name, postgres-0.postgres.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: guildhall
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: guildhall
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

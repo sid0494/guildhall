@@ -1,0 +1,6 @@
+# Every Guildhall object lives in this namespace, apart from Kubernetes' own
+# (docs/adr/0077). Applied first, so the objects that name it can be created.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: guildhall

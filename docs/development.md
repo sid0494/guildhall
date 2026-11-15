@@ -216,6 +216,30 @@ make kind-down                   # delete the cluster and everything in it
 it current; `kubectl config current-context` shows which cluster kubectl is
 talking to. The cluster is disposable: delete it whenever you are done.
 
+### Running the services in it
+
+The manifests are plain YAML ([ADR 0077](adr/0077-plain-yaml-manifests.md)):
+[`k8s/app/`](../k8s/app/) holds what every cluster runs, and
+[`k8s/local/`](../k8s/local/) what only kind runs. So far that is Redis, and
+Postgres and moto, from the same images as compose
+([ADR 0078](adr/0078-infrastructure-services-as-own-manifests.md)).
+Everything lives in the `guildhall` namespace.
+
+```sh
+make kind-deploy                     # create or update the Secret from .env, apply every manifest
+kubectl config set-context --current --namespace=guildhall  # once: make guildhall kubectl's default namespace
+kubectl get pods                     # each should be READY 1/1
+kubectl describe pod postgres-0      # details and recent events, when a pod won't start
+kubectl exec -it postgres-0 -- psql -U guildhall   # a psql session in the cluster's database
+```
+
+`make kind-deploy` turns every line of `.env` into the Secret
+`guildhall-secrets` ([ADR 0079](adr/0079-cluster-secret-from-env-file.md)),
+so `.env` must not quote its values. Pods read the Secret when they start:
+after changing `.env`, run `make kind-deploy` and restart the pods that use
+it. The cluster's database is its own, not compose's, and is deleted with the
+cluster. Postgres takes its password only when it first creates its data.
+
 ## Upstream rate limits
 
 Each plug-in's upstream budget lives in Redis, shared by every worker. To look
