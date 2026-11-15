@@ -79,6 +79,7 @@ guildhall/
   compose.yaml          local infrastructure: Postgres, Redis, moto
   tests/                unit, contract and fixture tests; mock upstream server
   scripts/              development tools, such as the fixture recorder
+  k8s/kind-cluster.yaml the local kind cluster
   k8s/base/             Deployments, Services, Ingress, probes
   k8s/overlays/         local (kind) and aws (EKS)
   infra/                Terraform: VPC, EKS, ECR, RDS, SQS, S3
@@ -337,7 +338,7 @@ The image is built in two stages: uv installs the locked runtime dependencies an
 | Environment | Compute | Queue and storage | Discord reaches it via |
 | --- | --- | --- | --- |
 | Dev | docker-compose | moto (SQS, S3), Postgres and Redis containers | Tunnel |
-| Local cluster | kind with Kustomize `overlays/local` | Same, in-cluster | Tunnel |
+| Local cluster | kind ([ADR 0076](adr/0076-kind-for-the-local-cluster.md)) with Kustomize `overlays/local` | Same, in-cluster | Tunnel |
 | AWS | EKS with `overlays/aws` | SQS, S3, RDS Postgres; Redis in-cluster | ALB with HTTPS (own domain, ACM certificate) |
 
 Locally, Docker Engine runs the services from `compose.yaml`: Postgres 18, Redis 8, and moto as an open-source emulator for SQS and S3. Under the `app` profile, compose also runs the bot's image: one-shot `migrate` and `aws-setup` services prepare the schema, the queues and the archive bucket, then the worker starts ([ADR 0026](adr/0026-app-services-in-compose.md), [ADR 0032](adr/0032-archive-keys-bucket-and-aws-settings.md)). LocalStack was the first choice but now requires an account token, which CI and Dependabot pull requests cannot use ([ADR 0012](adr/0012-local-infrastructure.md)).

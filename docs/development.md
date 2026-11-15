@@ -183,6 +183,39 @@ to `https://<your-domain>/interactions` once; the domain never changes. Saving
 it makes Discord send a `PING` and some badly signed requests, so it succeeds
 only while the api and the tunnel are up.
 
+## Local Kubernetes cluster
+
+The bot also runs on Kubernetes: [kind](https://kind.sigs.k8s.io/) locally,
+EKS on AWS ([ADR 0076](adr/0076-kind-for-the-local-cluster.md)). kind runs
+each Kubernetes node as a Docker container; the cluster, one control-plane
+node and one worker node, is defined in
+[`k8s/kind-cluster.yaml`](../k8s/kind-cluster.yaml).
+
+It needs kind v0.33.0, whose node images it is pinned to, and kubectl 1.37,
+matching the cluster's Kubernetes version. Both are single binaries; on
+Linux x86-64, into `~/.local/bin`:
+
+```sh
+curl -fsSLo /tmp/kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+echo "$(curl -fsSL https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64.sha256sum | cut -d' ' -f1)  /tmp/kind" | sha256sum --check
+install -m 0755 /tmp/kind ~/.local/bin/kind
+
+curl -fsSLo /tmp/kubectl https://dl.k8s.io/release/v1.37.2/bin/linux/amd64/kubectl
+echo "$(curl -fsSL https://dl.k8s.io/release/v1.37.2/bin/linux/amd64/kubectl.sha256)  /tmp/kubectl" | sha256sum --check
+install -m 0755 /tmp/kubectl ~/.local/bin/kubectl
+```
+
+```sh
+make kind-up                     # create the cluster and point kubectl at it (about a minute)
+kubectl get nodes                # the two nodes; both should be Ready
+kubectl get pods --all-namespaces  # Kubernetes' own components
+make kind-down                   # delete the cluster and everything in it
+```
+
+`make kind-up` adds a `kind-guildhall` context to `~/.kube/config` and makes
+it current; `kubectl config current-context` shows which cluster kubectl is
+talking to. The cluster is disposable: delete it whenever you are done.
+
 ## Upstream rate limits
 
 Each plug-in's upstream budget lives in Redis, shared by every worker. To look
