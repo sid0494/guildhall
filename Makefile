@@ -5,7 +5,12 @@
 E2E_TEST := docker compose --project-name guildhall-e2e-test \
 	--file compose.yaml --file compose.e2e-test.yaml --profile app
 
-.PHONY: help test-e2e test-e2e-up test-e2e-down
+.PHONY: help test-e2e test-e2e-up test-e2e-down kind-up kind-down
+
+# The local Kubernetes cluster (docs/adr/0076). Its node image is built for
+# this kind release, so the two are upgraded together.
+KIND_CLUSTER := guildhall
+KIND_VERSION := v0.33.0
 
 help: ## List the targets
 	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) \
@@ -22,3 +27,15 @@ test-e2e-up: ## Start the end-to-end test stack and leave it running
 
 test-e2e-down: ## Remove the end-to-end test stack and its data
 	$(E2E_TEST) down --volumes --remove-orphans
+
+kind-up: ## Create the local Kubernetes cluster (does nothing if it exists)
+	@kind version | grep -q '^kind $(KIND_VERSION) ' \
+		|| { echo "kind $(KIND_VERSION) is required, found: $$(kind version)"; exit 1; }
+	@if kind get clusters | grep -qx '$(KIND_CLUSTER)'; then \
+		echo "Cluster $(KIND_CLUSTER) already exists"; \
+	else \
+		kind create cluster --config k8s/kind-cluster.yaml --wait 2m; \
+	fi
+
+kind-down: ## Delete the local Kubernetes cluster and everything in it
+	kind delete cluster --name $(KIND_CLUSTER)

@@ -1,0 +1,11 @@
+# The local Kubernetes cluster (docs/adr/0076). `make kind-up` creates it.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: guildhall
+nodes:
+  # Runs the Kubernetes control plane only: kind taints it so workloads
+  # schedule on the worker, as they run on EKS's nodes.
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
