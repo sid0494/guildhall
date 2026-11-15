@@ -1,0 +1,59 @@
+# moto emulates SQS and S3 for the kind cluster only; EKS uses the real ones
+# (docs/adr/0078). It keeps everything in memory, so a restart loses the
+# queues and the bucket until the aws-setup Job runs again. Same image as
+# compose.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: moto
+  namespace: guildhall
+  labels:
+    app.kubernetes.io/name: moto
+    app.kubernetes.io/part-of: guildhall
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: moto
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: moto
+        app.kubernetes.io/part-of: guildhall
+    spec:
+      # Don't inject an environment variable per Service: moto reads
+      # MOTO_PORT, which the moto Service would set to tcp://<ip>:5000.
+      enableServiceLinks: false
+      containers:
+        - name: moto
+          image: motoserver/moto:5.2.5@sha256:59a1965d845249b04def37a0e2565f9cc6c44543cb89b68e90f28f344b3b0d1a
+          ports:
+            - name: http
+              containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /moto-api/
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: moto
+  namespace: guildhall
+  labels:
+    app.kubernetes.io/name: moto
+    app.kubernetes.io/part-of: guildhall
+spec:
+  selector:
+    app.kubernetes.io/name: moto
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
